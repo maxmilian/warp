@@ -26,8 +26,8 @@ use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
 use super::claude_transcript::read_jsonl;
 use super::codex_transcript::{
-    codex_sessions_root, find_session_file, parse_session_meta, CodexSessionMetadata,
-    CodexTranscriptEnvelope,
+    codex_sessions_root, find_session_file, parse_session_meta, write_envelope, CodexResumeInfo,
+    CodexSessionMetadata, CodexTranscriptEnvelope,
 };
 use super::json_utils::read_json_file_or_default;
 use super::{write_temp_file, HarnessRunner, ResumePayload, SavePoint, ThirdPartyHarness};
@@ -68,26 +68,53 @@ impl ThirdPartyHarness for CodexHarness {
         })
     }
 
+    /// Fetch the codex transcript for the current task's conversation and wrap it into a
+    /// [`ResumePayload::Codex`].
+    async fn fetch_resume_payload(
+        &self,
+        conversation_id: &AIConversationId,
+        harness_support_client: Arc<dyn HarnessSupportClient>,
+    ) -> Result<Option<ResumePayload>, AgentDriverError> {
+        let envelope: CodexTranscriptEnvelope =
+            super::fetch_transcript_envelope("codex", conversation_id, harness_support_client)
+                .await?;
+        let session_id = envelope.session_id;
+        Ok(Some(ResumePayload::Codex(CodexResumeInfo {
+            conversation_id: *conversation_id,
+            session_id,
+            envelope,
+        })))
+    }
+
     fn build_runner(
         &self,
         prompt: &str,
         system_prompt: Option<&str>,
-        _resumption_prompt: Option<&str>,
+        resumption_prompt: Option<&str>,
         working_dir: &Path,
         _task_id: Option<AmbientAgentTaskId>,
         server_api: Arc<ServerApi>,
         terminal_driver: ModelHandle<TerminalDriver>,
-        _resume: Option<ResumePayload>,
+        resume: Option<ResumePayload>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
-        // TODO(REMOTE-1503): support resume for Codex.
+        // The ResumePayload shouldn't contain non-Codex information, error if it does.
+        let codex_resume = resume.map(CodexResumeInfo::try_from).transpose()?;
+
+        // Mirror Claude harness behavior: prepend the resumption preamble to
+        // the user-turn prompt so codex treats it as immediate intent.
+        let owned_prompt = match resumption_prompt {
+            Some(preamble) if !preamble.is_empty() => format!("{preamble}\n\n{prompt}"),
+            _ => prompt.to_string(),
+        };
         let client: Arc<dyn HarnessSupportClient> = server_api;
         Ok(Box::new(CodexHarnessRunner::new(
             self.cli_agent().command_prefix(),
-            prompt,
+            &owned_prompt,
             system_prompt,
             working_dir,
             client,
             terminal_driver,
+            codex_resume,
         )?))
     }
 }
@@ -96,8 +123,20 @@ impl ThirdPartyHarness for CodexHarness {
 ///
 /// `--dangerously-bypass-approvals-and-sandbox` disables both the sandbox and approval
 /// prompts so the agent can run autonomously.
-fn codex_command(cli_name: &str, prompt_path: &str) -> String {
-    format!("{cli_name} --dangerously-bypass-approvals-and-sandbox \"$(cat '{prompt_path}')\"")
+/// `Some(session_id)` indicates that we want to resume that prior session. Unlike claude,
+/// codex does not support assigning a session_id to a new conversation.
+fn codex_command(cli_name: &str, session_id: Option<&Uuid>, prompt_path: &str) -> String {
+    match session_id {
+        Some(session_id) => format!(
+            "{cli_name} resume --dangerously-bypass-approvals-and-sandbox {session_id} \
+             \"$(cat '{prompt_path}')\""
+        ),
+        None => {
+            format!(
+                "{cli_name} --dangerously-bypass-approvals-and-sandbox \"$(cat '{prompt_path}')\""
+            )
+        }
+    }
 }
 
 enum CodexRunnerState {
@@ -125,9 +164,12 @@ struct CodexHarnessRunner {
     /// Cached parse of the rollout's `SessionMeta` line. Codex writes this once at session
     /// start, so subsequent saves reuse it instead of reparsing the first JSONL entry.
     session_metadata: OnceLock<CodexSessionMetadata>,
+    /// Optionally supply an existing conversation ID.
+    preexisting_conversation_id: Option<AIConversationId>,
 }
 
 impl CodexHarnessRunner {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         cli_command: &str,
         prompt: &str,
@@ -135,19 +177,64 @@ impl CodexHarnessRunner {
         _working_dir: &Path,
         client: Arc<dyn HarnessSupportClient>,
         terminal_driver: ModelHandle<TerminalDriver>,
+        resume: Option<CodexResumeInfo>,
     ) -> Result<Self, AgentDriverError> {
         let temp_file = write_temp_file("oz_prompt_", prompt)?;
         let prompt_path = temp_file.path().display().to_string();
 
+        let (session_id, preexisting_conversation_id, transcript_path, session_metadata) =
+            match resume {
+                Some(CodexResumeInfo {
+                    conversation_id,
+                    session_id,
+                    envelope,
+                }) => {
+                    let sessions_root = codex_sessions_root().map_err(|e| {
+                        AgentDriverError::ConfigBuildFailed(
+                            e.context("Failed to resolve codex sessions root"),
+                        )
+                    })?;
+                    let path = write_envelope(&envelope, &sessions_root).map_err(|e| {
+                        AgentDriverError::ConfigBuildFailed(
+                            e.context("Failed to rehydrate codex transcript"),
+                        )
+                    })?;
+                    let metadata = parse_session_meta(envelope.entries.first());
+                    (
+                        Some(session_id),
+                        Some(conversation_id),
+                        Some(path),
+                        metadata,
+                    )
+                }
+                None => (None, None, None, None),
+            };
+
+        let command = codex_command(cli_command, session_id.as_ref(), &prompt_path);
+
+        let session_id_cell: OnceLock<Uuid> = OnceLock::new();
+        if let Some(id) = session_id {
+            let _ = session_id_cell.set(id);
+        }
+        let transcript_path_cell: OnceLock<PathBuf> = OnceLock::new();
+        if let Some(p) = transcript_path {
+            let _ = transcript_path_cell.set(p);
+        }
+        let session_metadata_cell: OnceLock<CodexSessionMetadata> = OnceLock::new();
+        if let Some(m) = session_metadata {
+            let _ = session_metadata_cell.set(m);
+        }
+
         Ok(Self {
-            command: codex_command(cli_command, &prompt_path),
+            command,
             _temp_prompt_file: temp_file,
             client,
             terminal_driver,
             state: Mutex::new(CodexRunnerState::Preexec),
-            session_id: OnceLock::new(),
-            transcript_path: OnceLock::new(),
-            session_metadata: OnceLock::new(),
+            session_id: session_id_cell,
+            transcript_path: transcript_path_cell,
+            session_metadata: session_metadata_cell,
+            preexisting_conversation_id,
         })
     }
 
@@ -178,15 +265,25 @@ impl HarnessRunner for CodexHarnessRunner {
         &self,
         foreground: &ModelSpawner<AgentDriver>,
     ) -> Result<CommandHandle, AgentDriverError> {
-        let conversation_id = self
-            .client
-            .create_external_conversation(CODEX_CLI_FORMAT)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to create external conversation: {e}");
-                AgentDriverError::ConfigBuildFailed(e)
-            })?;
-        log::info!("Created external conversation {conversation_id}");
+        // Resume runs reuse the prior server conversation id; fresh runs mint a new one.
+        let conversation_id = match self.preexisting_conversation_id {
+            Some(id) => {
+                log::info!("Resuming external conversation {id}");
+                id
+            }
+            None => {
+                let id = self
+                    .client
+                    .create_external_conversation(CODEX_CLI_FORMAT)
+                    .await
+                    .map_err(|e| {
+                        log::error!("Failed to create external conversation: {e}");
+                        AgentDriverError::ConfigBuildFailed(e)
+                    })?;
+                log::info!("Created external conversation {id}");
+                id
+            }
+        };
 
         let command = self.command.clone();
         let terminal_driver = self.terminal_driver.clone();
