@@ -7657,11 +7657,20 @@ fn orchestrate_to_start_agent_mode(
             // (`harness_type: None`). Other harnesses route through the
             // Local-with-harness arm.
             let trimmed = run_harness_type.trim();
+            // Honor the user's run-wide model selection on local launches.
+            // `propagate_parent_agent_settings` would otherwise inherit the
+            // parent's preferred LLM and silently discard this choice.
+            let trimmed_model_id = run_model_id.trim();
+            let model_id = (!trimmed_model_id.is_empty()).then(|| trimmed_model_id.to_string());
             if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("oz") {
-                Ok(M::Local { harness_type: None })
+                Ok(M::Local {
+                    harness_type: None,
+                    model_id,
+                })
             } else {
                 Ok(M::Local {
                     harness_type: Some(trimmed.to_string()),
+                    model_id,
                 })
             }
         }

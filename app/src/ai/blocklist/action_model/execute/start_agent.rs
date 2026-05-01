@@ -295,7 +295,10 @@ impl StartAgentExecutor {
         let version = *version;
         let parent_conversation_id = input.conversation_id;
         let (execution_mode, parent_run_id) = match execution_mode.clone() {
-            StartAgentExecutionMode::Local { harness_type: None } => {
+            StartAgentExecutionMode::Local {
+                harness_type: None,
+                model_id,
+            } => {
                 // Legacy local Oz child agents do not use
                 // StartAgentRequest.parent_run_id. Instead, the child
                 // conversation is linked back to its parent on the first
@@ -305,10 +308,17 @@ impl StartAgentExecutor {
                 // child agents and local third-party harness children need
                 // parent_run_id here because their run is spawned before that
                 // first child request exists.
-                (StartAgentExecutionMode::Local { harness_type: None }, None)
+                (
+                    StartAgentExecutionMode::Local {
+                        harness_type: None,
+                        model_id,
+                    },
+                    None,
+                )
             }
             StartAgentExecutionMode::Local {
                 harness_type: Some(harness_type),
+                model_id,
             } => {
                 let Some(harness) = Harness::parse_local_child_harness(&harness_type) else {
                     return ActionExecution::Sync(AIAgentActionResultType::StartAgent(
@@ -346,6 +356,7 @@ impl StartAgentExecutor {
                 (
                     StartAgentExecutionMode::Local {
                         harness_type: Some(harness.to_string()),
+                        model_id,
                     },
                     Some(parent_run_id),
                 )

@@ -229,6 +229,11 @@ pub enum StartAgentExecutionMode {
         /// `None` selects the legacy embedded local child-agent flow.
         /// `Some(...)` selects a third-party CLI harness to launch locally.
         harness_type: Option<String>,
+        /// `None` inherits the parent agent's preferred LLM (legacy behavior).
+        /// `Some(_)` overrides the child's preferred LLM with the supplied
+        /// model id (used by the orchestrate confirmation card so the user's
+        /// model selection is honored on local launches).
+        model_id: Option<String>,
     },
     Remote {
         environment_id: String,
@@ -244,12 +249,16 @@ pub enum StartAgentExecutionMode {
 impl StartAgentExecutionMode {
     /// Constructs a local execution mode using the legacy v1 default harness.
     pub fn local_with_defaults() -> Self {
-        Self::Local { harness_type: None }
+        Self::Local {
+            harness_type: None,
+            model_id: None,
+        }
     }
     /// Constructs a local execution mode for a specific third-party harness.
     pub fn local_harness(harness_type: String) -> Self {
         Self::Local {
             harness_type: Some(harness_type),
+            model_id: None,
         }
     }
     /// Constructs a remote execution mode using the legacy v1 defaults for

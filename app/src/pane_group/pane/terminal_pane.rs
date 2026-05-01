@@ -115,6 +115,31 @@ fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {
     BASE64_STANDARD.encode(message.encode_to_vec())
 }
 
+/// Overrides the child's preferred agent-mode LLM with `model_id` when one
+/// is provided. Used by the orchestrate confirmation card so the user's
+/// model selection is honored on local launches.
+///
+/// The child terminal view's preferred LLM is set in
+/// `propagate_parent_agent_settings` (see `pane_group::child_agent`),
+/// which inherits whatever LLM the parent currently has active. This
+/// helper re-applies the user-supplied selection on top of that
+/// inheritance so the orchestrate dropdown isn't silently overwritten.
+/// `None` means "inherit the parent's preferred LLM" (the legacy
+/// behavior; helper is a no-op).
+fn apply_child_model_id_override(
+    child_terminal_view_id: EntityId,
+    model_id: Option<&str>,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let Some(model_id) = model_id.map(str::trim).filter(|m| !m.is_empty()) else {
+        return;
+    };
+    let llm_id: ai::LLMId = model_id.into();
+    LLMPreferences::handle(ctx).update(ctx, |llm_prefs, ctx| {
+        llm_prefs.update_preferred_agent_mode_llm(&llm_id, child_terminal_view_id, ctx);
+    });
+}
+
 fn register_legacy_local_lifecycle_subscription(
     parent_conversation_id: AIConversationId,
     child_conversation_id: AIConversationId,
@@ -1153,12 +1178,16 @@ fn dispatch_start_agent_conversation(
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     match request.execution_mode.clone() {
-        StartAgentExecutionMode::Local { harness_type: None } => {
-            launch_local_no_harness_child(group, parent_pane_id, request, executor, ctx);
+        StartAgentExecutionMode::Local {
+            harness_type: None,
+            model_id,
+        } => {
+            launch_local_no_harness_child(group, parent_pane_id, request, model_id, executor, ctx);
         }
         #[cfg(not(target_family = "wasm"))]
         StartAgentExecutionMode::Local {
             harness_type: Some(harness_type),
+            model_id,
         } => {
             launch_local_harness_child(
                 group,
@@ -1166,6 +1195,7 @@ fn dispatch_start_agent_conversation(
                 terminal_pane_id,
                 request,
                 harness_type,
+                model_id,
                 executor,
                 ctx,
             );
@@ -1229,12 +1259,15 @@ fn launch_local_no_harness_child(
     group: &mut PaneGroup,
     parent_pane_id: PaneId,
     request: StartAgentRequest,
+    model_id: Option<String>,
     executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> Option<AIConversationId> {
+    log::info!("[orchestrate-debug] launching local Oz child with resolved model_id={model_id:?}");
     let request_id = request.id;
     let HiddenChildAgentConversation {
         terminal_view: new_terminal_view,
+        terminal_view_id,
         conversation_id,
         ..
     } = create_hidden_child_agent_conversation(
@@ -1245,6 +1278,13 @@ fn launch_local_no_harness_child(
         HashMap::new(),
         ctx,
     )?;
+
+    // Honor an explicit model_id override (e.g. from the orchestrate
+    // confirmation card). `create_hidden_child_agent_conversation` already
+    // ran `propagate_parent_agent_settings`, which inherited the parent's
+    // preferred LLM; this re-applies the user's selection on top so it
+    // is not silently overwritten.
+    apply_child_model_id_override(terminal_view_id, model_id.as_deref(), ctx);
 
     executor.update(ctx, |executor, _| {
         executor.record_child_conversation(request_id, conversation_id);
@@ -1287,15 +1327,20 @@ fn launch_local_no_harness_child(
 /// back via [`StartAgentExecutor::record_child_conversation`] before the
 /// launch command is executed.
 #[cfg(not(target_family = "wasm"))]
+#[allow(clippy::too_many_arguments)]
 fn launch_local_harness_child(
     group: &mut PaneGroup,
     parent_pane_id: PaneId,
     terminal_pane_id: TerminalPaneId,
     request: StartAgentRequest,
     harness_type: String,
+    model_id: Option<String>,
     executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
+    log::info!(
+        "[orchestrate-debug] launching local harness child harness_type={harness_type:?} resolved model_id={model_id:?}"
+    );
     let startup_directory = group.startup_path_for_new_session(Some(terminal_pane_id), ctx);
     let ai_client = ServerApiProvider::handle(ctx).as_ref(ctx).get_ai_client();
     let request_id = request.id;
