@@ -235,7 +235,7 @@ impl ClaudeHarnessRunner {
                 }
                 (session_id, Some(conversation_id))
             }
-            None => (Uuid::new_v4(), None, false),
+            None => (Uuid::new_v4(), None),
         };
 
         let temp_system_prompt_file = system_prompt
