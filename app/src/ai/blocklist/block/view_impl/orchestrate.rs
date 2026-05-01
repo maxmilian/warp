@@ -144,17 +144,25 @@ fn render_confirmation_card(
         theme.surface_2()
     };
 
+    // P5.6: active confirmation card spans the full block-list width
+    // (no agent-output indent), matching how the apply-diff card
+    // renders when it's blocked on user confirmation. We use
+    // `with_content_item_spacing()` (CONTENT_HORIZONTAL_PADDING on
+    // both sides + standard bottom margin) which is the same wrapper
+    // apply-diff uses in `render_requested_edits_output_message`'s
+    // `Embedded` branch when the action is blocked.
     Container::new(content.finish())
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
         .with_border(Border::all(1.).with_border_fill(border_color))
         .finish()
-        .with_agent_output_item_spacing(app)
+        .with_content_item_spacing()
         .finish()
 }
 
 fn render_header(handles: &OrchestrateCardHandles, app: &AppContext) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
     let mut config = HeaderConfig::new(ORCHESTRATE_CARD_TITLE, app)
-        .with_icon(icons::orchestrate_stop_icon())
+        .with_icon(icons::orchestrate_stop_icon(appearance))
         .with_corner_radius_override(CornerRadius::with_top(Radius::Pixels(8.)));
 
     if let (Some(reject), Some(edit), Some(accept)) = (
@@ -221,7 +229,9 @@ fn render_summary_with_edit_chip(
     .with_selectable(true)
     .finish();
 
-    Container::new(summary_text).with_margin_bottom(8.).finish()
+    // P5.8: 12px between summary text and the "Agents (N)" label
+    // below it (was 8px), matching the Figma 4340:117104 column gap.
+    Container::new(summary_text).with_margin_bottom(12.).finish()
 }
 
 fn render_agents_section(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Element> {
@@ -374,14 +384,35 @@ fn render_editor(
     // dropdown columns: Agent harness, Host, Environment, Base model.
     // Each column renders a small grey label above the dropdown body.
     //
-    // P4.7: the editor area no longer renders the gray surface_1 panel
-    // with rounded corners. Instead the editor is separated from the
-    // body above by a 1px top divider and uses the default block
-    // background, matching the Figma update.
+    // P4.7 / P5.2: the editor area no longer renders the gray surface_1
+    // panel with rounded corners. Instead the editor is separated from
+    // the body above by a 1px top divider element (inset 16px on the
+    // left and 12px on the right per the Figma mock) and uses the
+    // default block background.
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-    column.add_child(render_mode_toggle(action_id, state, handles, appearance));
+    // P5.2: top divider as a 1px-tall element with horizontal margins
+    // (16 left / 12 right). Implementing this on the editor's outer
+    // Container with `Border::top` would span edge-to-edge, so we
+    // render the divider as the first child of the editor column
+    // instead.
+    let divider = Container::new(
+        ConstrainedBox::new(Empty::new().finish())
+            .with_height(1.)
+            .finish(),
+    )
+    .with_background_color(theme.surface_2().into_solid())
+    .with_margin_left(16.)
+    .with_margin_right(12.)
+    .finish();
+    column.add_child(divider);
+
+    column.add_child(
+        Container::new(render_mode_toggle(action_id, state, handles, appearance))
+            .with_margin_top(12.)
+            .finish(),
+    );
     column.add_child(render_picker_row_quad(state, handles, appearance));
 
     // P4.6: validation error sits below the picker row, inside the
@@ -394,10 +425,8 @@ fn render_editor(
 
     Container::new(column.finish())
         .with_horizontal_padding(16.)
-        .with_padding_top(12.)
         .with_padding_bottom(12.)
         .with_background_color(theme.background().into_solid())
-        .with_border(Border::top(1.).with_border_fill(theme.surface_2()))
         .finish()
 }
 
@@ -507,9 +536,13 @@ fn render_picker_column(
     .finish();
 
     let body: Box<dyn Element> = picker.unwrap_or_else(|| Empty::new().finish());
+    // P5.3: drop the explicit margin_bottom on the label container.
+    // The picker's top padding (P5.3 reduced to 4 in block.rs) is now
+    // the only contributor to the label-to-text gap, which matches
+    // the Figma mock.
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(Container::new(label_el).with_margin_bottom(4.).finish())
+        .with_child(label_el)
         .with_child(body)
         .finish()
 }
@@ -560,13 +593,17 @@ fn render_mode_toggle(
     // Single segmented-control container. Figma 4340:117057 specifies a
     // ~5% foreground overlay background (`fg_overlay_1`) with 4px inner
     // padding around two equal-width segments.
+    //
+    // P5.5: the segmented control is exactly 205px wide per Figma. The
+    // two segments split that width evenly via Expanded so each is
+    // ~98px (after 4px padding on each side of the outer container).
     let segment_outer_bg: Fill = Fill::Solid(ColorU::new(0xfa, 0xf9, 0xf6, 0x1a)); // rgba(250,249,246,0.10)
     let segments_row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_alignment(MainAxisAlignment::Start)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_child(local_segment)
-        .with_child(cloud_segment)
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_child(Expanded::new(1.0, local_segment).finish())
+        .with_child(Expanded::new(1.0, cloud_segment).finish())
         .finish();
     let segmented_control = Container::new(segments_row)
         .with_padding_top(4.)
@@ -576,10 +613,15 @@ fn render_mode_toggle(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
         .with_background(segment_outer_bg)
         .finish();
+    let segmented_control = ConstrainedBox::new(segmented_control)
+        .with_width(205.)
+        .finish();
 
+    // P5.3: drop label margin_bottom; rely on segmented control's own
+    // 4px padding for the gap.
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_child(Container::new(label).with_margin_bottom(4.).finish())
+        .with_child(label)
         .with_child(segmented_control)
         .finish()
 }
@@ -612,8 +654,14 @@ fn render_segment_button(
                 inactive_text_color
             })
             .finish();
-        let mut container = Container::new(text)
-            .with_horizontal_padding(20.)
+        // P5.5: each segment is centered horizontally inside the
+        // Expanded(1.0) flex slot. Drop the wide horizontal padding
+        // and let Flex fill divide the 205px-wide outer container
+        // equally between segments; vertical padding still keeps the
+        // 36px outer height.
+        // `Align::new` defaults to center alignment.
+        let centered = warpui::elements::Align::new(text).finish();
+        let mut container = Container::new(centered)
             .with_vertical_padding(6.)
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
         if is_active {

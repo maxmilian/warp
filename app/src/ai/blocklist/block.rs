@@ -315,16 +315,10 @@ pub fn init(app: &mut AppContext) {
             AIBlockAction::OrchestrateDiscardEditsCurrentCard,
             id!(AIBlock::ui_name()) & id!(ORCHESTRATE_EDITOR_OPEN),
         ),
-        // P4.11: Esc rejects the orchestrate confirmation card when
-        // no editor is open. The handler checks
-        // `has_orchestrate_editor_open()` and bows out if any editor
-        // is open so the Discard Edits binding above wins in that
-        // case.
-        FixedBinding::new(
-            "escape",
-            AIBlockAction::OrchestrateRejectCurrentCard,
-            id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
-        ),
+        // P5.1: Esc is intentionally NOT bound to Reject. Reject's
+        // documented shortcut is `Ctrl-C`. The escape binding above
+        // (gated on ORCHESTRATE_EDITOR_OPEN) handles editor discard;
+        // outside the editor, Esc is a no-op for orchestrate cards.
     ]);
 
     ask_user_question_view::init(app);
@@ -6745,17 +6739,13 @@ impl TypedActionView for AIBlock {
                 }
             }
             AIBlockAction::OrchestrateRejectCurrentCard => {
-                // P4.11: if the editor is open on any card, the Esc
-                // binding for Discard Edits is the active path; bow
-                // out so we don't accidentally cancel the action when
-                // the user just wanted to close the editor.
-                if self.has_orchestrate_editor_open() {
-                    log::info!(
-                        "[orchestrate-debug] OrchestrateRejectCurrentCard suppressed: editor is open"
-                    );
-                    ctx.notify();
-                    return;
-                }
+                // P5.1: Reject's keyboard shortcut is `Ctrl-C` (the
+                // universal cancel path), not Esc. This action is
+                // currently unbound from any keystroke; it remains
+                // here for symmetry with the other Current-Card
+                // variants and in case future code paths dispatch it
+                // programmatically. Diagnostic log retained from
+                // P4.11 for parity with other handlers.
                 let resolved = self.current_orchestrate_action_id(ctx);
                 log::info!(
                     "[orchestrate-debug] OrchestrateRejectCurrentCard fired: resolved action_id={resolved:?}"
@@ -7034,16 +7024,17 @@ impl AIBlock {
         const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
         const ORCHESTRATE_PICKER_BORDER_WIDTH: f32 = 1.;
         const ORCHESTRATE_PICKER_FONT_SIZE: f32 = 14.;
-        // Vertical padding must leave room for the text line.
-        // top_bar_height (36) - padding_top - padding_bottom must be
-        // >= font_size * line_height_ratio (~14 * 1.4 \u2248 20). With 10/10
-        // vertical padding the inner area is 16px, which is too small;
-        // the text element silently fails to render (the icon still
-        // renders because it's wrapped in its own 15x15 ConstrainedBox).
-        // 8/8 leaves 20px which matches the text's natural height.
+        // P5.3: tighten label-to-picker visual gap by reducing the
+        // picker's top padding from 8 to 4 (and pushing the saved 4px
+        // into the bottom padding so the picker height stays 36 and
+        // the inner 20px text area still fits 14px text at 1.4 line
+        // height). The text now anchors closer to the top edge of
+        // the picker, which (combined with reducing the label's
+        // margin_bottom in render_picker_column) tightens the visual
+        // gap between the label and the picker text.
         let picker_padding = Coords {
-            top: 8.,
-            bottom: 8.,
+            top: 4.,
+            bottom: 12.,
             left: 12.,
             right: 12.,
         };

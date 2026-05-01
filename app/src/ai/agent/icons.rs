@@ -1,19 +1,6 @@
-use pathfinder_color::ColorU;
 use warp_core::ui::{appearance::Appearance, theme::AnsiColorIdentifier};
 
 use crate::ui_components::{blended_colors, icons::Icon};
-
-/// Stop-filled icon color for the orchestrate confirmation card. Pulled from
-/// the Figma orchestrate mock (node 4340:116901); a pale pastel that does
-/// not map cleanly to any theme yellow token, so we hardcode the literal
-/// rather than route it through `AnsiColorIdentifier::Yellow` /
-/// `ui_yellow_color` / `ui_warning_color`.
-const ORCHESTRATE_STOP_ICON_COLOR: ColorU = ColorU {
-    r: 0xfe,
-    g: 0xfd,
-    b: 0xc2,
-    a: 0xff,
-};
 
 pub fn todo_list_icon(appearance: &Appearance) -> warpui::elements::Icon {
     warpui::elements::Icon::new(
@@ -89,12 +76,13 @@ pub fn yellow_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
     )
 }
 
-/// Stop-filled icon for the orchestrate confirmation card header. Uses the
-/// pastel `#fefdc2` from the Figma mock — distinct from the theme-driven
-/// `yellow_stop_icon` so the orchestrate card matches the design exactly
-/// without affecting other agent-status surfaces.
-pub fn orchestrate_stop_icon() -> warpui::elements::Icon {
-    warpui::elements::Icon::new(Icon::StopFilled.into(), ORCHESTRATE_STOP_ICON_COLOR)
+/// Stop-filled icon for the orchestrate confirmation card header. P5.7:
+/// reuse the same theme-driven `yellow_stop_icon` (ANSI yellow) that the
+/// apply-diff card uses for its `WaitingForUser` state — keeps the
+/// confirmation icon consistent across tool-call cards and lets the
+/// theme drive the exact hue.
+pub fn orchestrate_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
+    yellow_stop_icon(appearance)
 }
 
 /// To be used for actions (like running commands/reading files) that are long-running and executing.
