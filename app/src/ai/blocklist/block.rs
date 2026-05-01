@@ -7024,17 +7024,15 @@ impl AIBlock {
         const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
         const ORCHESTRATE_PICKER_BORDER_WIDTH: f32 = 1.;
         const ORCHESTRATE_PICKER_FONT_SIZE: f32 = 14.;
-        // P5.3: tighten label-to-picker visual gap by reducing the
-        // picker's top padding from 8 to 4 (and pushing the saved 4px
-        // into the bottom padding so the picker height stays 36 and
-        // the inner 20px text area still fits 14px text at 1.4 line
-        // height). The text now anchors closer to the top edge of
-        // the picker, which (combined with reducing the label's
-        // margin_bottom in render_picker_column) tightens the visual
-        // gap between the label and the picker text.
+        // Symmetric 8/8 vertical padding leaves a 20px content area
+        // inside the 36px-tall picker, which exactly fits 14px text at
+        // 1.4 line height. The earlier asymmetric 4/12 padding (P5.3)
+        // produced too much empty space below the picker text; the
+        // label-to-picker gap is instead tightened by removing the
+        // label container's margin_bottom in `render_picker_column`.
         let picker_padding = Coords {
-            top: 4.,
-            bottom: 12.,
+            top: 8.,
+            bottom: 8.,
             left: 12.,
             right: 12.,
         };

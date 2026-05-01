@@ -392,19 +392,17 @@ fn render_editor(
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-    // P5.2: top divider as a 1px-tall element with horizontal margins
-    // (16 left / 12 right). Implementing this on the editor's outer
-    // Container with `Border::top` would span edge-to-edge, so we
-    // render the divider as the first child of the editor column
-    // instead.
+    // Top divider as a 1px-tall element. Per the Figma mock the
+    // divider spans the full inner width of the card (no horizontal
+    // inset) \u2014 the earlier 16px/12px insets (P5.2) were too
+    // aggressive and left visible gaps next to the card's vertical
+    // border.
     let divider = Container::new(
         ConstrainedBox::new(Empty::new().finish())
             .with_height(1.)
             .finish(),
     )
     .with_background_color(theme.surface_2().into_solid())
-    .with_margin_left(16.)
-    .with_margin_right(12.)
     .finish();
     column.add_child(divider);
 
@@ -423,10 +421,16 @@ fn render_editor(
         column.add_child(render_validation_error(reason, appearance));
     }
 
+    // P5.4: add rounded bottom corners that match the outer card's
+    // 8px radius so the editor's solid background respects the
+    // card's rounded shape (without this the editor's bg paints into
+    // the corner pixels and the card's bottom-left/bottom-right
+    // corners look truncated by the inset selection outline).
     Container::new(column.finish())
         .with_horizontal_padding(16.)
         .with_padding_bottom(12.)
         .with_background_color(theme.background().into_solid())
+        .with_corner_radius(CornerRadius::with_bottom(Radius::Pixels(8.)))
         .finish()
 }
 
@@ -597,13 +601,14 @@ fn render_mode_toggle(
     // P5.5: the segmented control is exactly 205px wide per Figma. The
     // two segments split that width evenly via Expanded so each is
     // ~98px (after 4px padding on each side of the outer container).
+    // Order: Cloud first, then Local (per Figma 4340:117134).
     let segment_outer_bg: Fill = Fill::Solid(ColorU::new(0xfa, 0xf9, 0xf6, 0x1a)); // rgba(250,249,246,0.10)
     let segments_row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_alignment(MainAxisAlignment::Start)
         .with_main_axis_size(MainAxisSize::Max)
-        .with_child(Expanded::new(1.0, local_segment).finish())
         .with_child(Expanded::new(1.0, cloud_segment).finish())
+        .with_child(Expanded::new(1.0, local_segment).finish())
         .finish();
     let segmented_control = Container::new(segments_row)
         .with_padding_top(4.)
@@ -617,11 +622,14 @@ fn render_mode_toggle(
         .with_width(205.)
         .finish();
 
-    // P5.3: drop label margin_bottom; rely on segmented control's own
-    // 4px padding for the gap.
+    // 6px gap between the "Agent location" label and the segmented
+    // control \u2014 enough breathing room so the label doesn't crowd
+    // the buttons. The picker labels in `render_picker_column` keep
+    // their tighter 0px gap because the pickers themselves carry
+    // 8px of internal top padding.
     Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_child(label)
+        .with_child(Container::new(label).with_margin_bottom(6.).finish())
         .with_child(segmented_control)
         .finish()
 }
