@@ -25,8 +25,9 @@ use ai::agent::action_result::{OrchestrateAgentOutcomeKind, OrchestrateResult};
 use pathfinder_color::ColorU;
 use std::rc::Rc;
 use warpui::elements::{
-    Border, ChildView, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded, Fill, Flex,
-    Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, Text,
+    Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty,
+    Expanded, Fill, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
+    ParentElement, Radius, Text,
 };
 use warpui::platform::Cursor;
 use warpui::{AppContext, Element, SingletonEntity};
@@ -86,7 +87,7 @@ pub(super) fn render_orchestrate(
     // (block.rs ~line 3241).
     if props.model.is_restored() {
         return render_status_only_card(
-            "Orchestration cancelled".to_string(),
+            "Spawn agents cancelled".to_string(),
             appearance,
             StatusKind::Cancelled,
             app,
@@ -180,13 +181,10 @@ fn render_body(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Elemen
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-    // The validation error appears above the summary so it sits between the
-    // header (where the buttons live) and the rest of the body, satisfying
-    // spec §8's "above the buttons" directive.
-    if let Some(reason) = state.accept_disabled_reason() {
-        column.add_child(render_validation_error(reason, appearance));
-    }
-
+    // P4.6: validation error moved out of the body and rendered
+    // *below* the picker row inside `render_editor`, so it appears
+    // adjacent to the offending field rather than at the top of the
+    // body. The body now only carries summary + agents.
     column.add_child(render_summary_with_edit_chip(state, appearance));
     column.add_child(render_agents_section(state, app));
 
@@ -308,7 +306,7 @@ fn render_terminal_state(
             render_status_only_card(label, appearance, StatusKind::Failure, app)
         }
         OrchestrateResult::Cancelled => render_status_only_card(
-            "Orchestration cancelled".to_string(),
+            "Spawn agents cancelled".to_string(),
             appearance,
             StatusKind::Cancelled,
             app,
@@ -375,20 +373,31 @@ fn render_editor(
     // followed by a single horizontal row of four equally-distributed
     // dropdown columns: Agent harness, Host, Environment, Base model.
     // Each column renders a small grey label above the dropdown body.
+    //
+    // P4.7: the editor area no longer renders the gray surface_1 panel
+    // with rounded corners. Instead the editor is separated from the
+    // body above by a 1px top divider and uses the default block
+    // background, matching the Figma update.
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
     column.add_child(render_mode_toggle(action_id, state, handles, appearance));
     column.add_child(render_picker_row_quad(state, handles, appearance));
 
+    // P4.6: validation error sits below the picker row, inside the
+    // editor area, so it appears adjacent to the offending field
+    // (e.g. "Select an environment to launch on Cloud." right below
+    // the Environment dropdown).
+    if let Some(reason) = state.accept_disabled_reason() {
+        column.add_child(render_validation_error(reason, appearance));
+    }
+
     Container::new(column.finish())
-        .with_horizontal_padding(8.)
-        .with_vertical_padding(8.)
-        .with_margin_left(16.)
-        .with_margin_right(16.)
-        .with_margin_bottom(12.)
-        .with_background_color(theme.surface_1().into())
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+        .with_horizontal_padding(16.)
+        .with_padding_top(12.)
+        .with_padding_bottom(12.)
+        .with_background_color(theme.background().into_solid())
+        .with_border(Border::top(1.).with_border_fill(theme.surface_2()))
         .finish()
 }
 
@@ -404,75 +413,83 @@ fn render_picker_row_quad(
     handles: &OrchestrateCardHandles,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
+    // P4.5: in Local mode there are only two pickers (Agent harness +
+    // Base model). The Figma calls for these to pack at their natural
+    // width on the leading edge instead of stretching across the row.
+    // Cloud mode keeps the four-column distributed layout.
+    let is_remote = state.execution_mode.is_remote();
+    let main_axis_size = if is_remote {
+        MainAxisSize::Max
+    } else {
+        MainAxisSize::Min
+    };
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_size(main_axis_size)
+        .with_main_axis_alignment(MainAxisAlignment::Start)
         .with_spacing(12.);
 
-    row.add_child(
-        Expanded::new(
-            1.0,
-            render_picker_column(
-                "Agent harness",
-                handles
-                    .harness_picker
-                    .as_ref()
-                    .map(|p| ChildView::new(p).finish()),
-                appearance,
-            ),
-        )
-        .finish(),
+    // Fixed width for Local-mode pickers. Cloud pickers use Expanded so
+    // they share the available row width equally; Local mode packs
+    // left at this fixed width per the Figma update (P4.5).
+    const LOCAL_PICKER_WIDTH: f32 = 220.;
+    let add_picker = |row: &mut Flex, label: &str, picker: Option<Box<dyn Element>>| {
+        let column = render_picker_column(label, picker, appearance);
+        if is_remote {
+            row.add_child(Expanded::new(1.0, column).finish());
+        } else {
+            // Fixed-width column so the picker doesn't expand to fill
+            // the row in Local mode.
+            row.add_child(
+                ConstrainedBox::new(column)
+                    .with_width(LOCAL_PICKER_WIDTH)
+                    .finish(),
+            );
+        }
+    };
+
+    add_picker(
+        &mut row,
+        "Agent harness",
+        handles
+            .harness_picker
+            .as_ref()
+            .map(|p| ChildView::new(p).finish()),
     );
     // Host + Environment only render in Cloud (Remote) mode. Local mode
     // hides them per PRODUCT.md \u00a7"Default state and prepopulation rules";
     // the underlying `OrchestrateExecutionMode::Local` variant has no
     // host or environment fields.
-    if state.execution_mode.is_remote() {
-        row.add_child(
-            Expanded::new(
-                1.0,
-                render_picker_column(
-                    "Host",
-                    handles
-                        .host_picker
-                        .as_ref()
-                        .map(|p| ChildView::new(p).finish()),
-                    appearance,
-                ),
-            )
-            .finish(),
+    if is_remote {
+        add_picker(
+            &mut row,
+            "Host",
+            handles
+                .host_picker
+                .as_ref()
+                .map(|p| ChildView::new(p).finish()),
         );
-        row.add_child(
-            Expanded::new(
-                1.0,
-                render_picker_column(
-                    "Environment",
-                    handles
-                        .environment_picker
-                        .as_ref()
-                        .map(|p| ChildView::new(p).finish()),
-                    appearance,
-                ),
-            )
-            .finish(),
+        add_picker(
+            &mut row,
+            "Environment",
+            handles
+                .environment_picker
+                .as_ref()
+                .map(|p| ChildView::new(p).finish()),
         );
     }
-    row.add_child(
-        Expanded::new(
-            1.0,
-            render_picker_column(
-                "Base model",
-                handles
-                    .model_picker
-                    .as_ref()
-                    .map(|p| ChildView::new(p).finish()),
-                appearance,
-            ),
-        )
-        .finish(),
+    add_picker(
+        &mut row,
+        "Base model",
+        handles
+            .model_picker
+            .as_ref()
+            .map(|p| ChildView::new(p).finish()),
     );
 
-    Container::new(row.finish()).with_margin_top(8.).finish()
+    // P4.8: 12px between the segmented control bottom and the picker
+    // row (was 8px).
+    Container::new(row.finish()).with_margin_top(12.).finish()
 }
 
 fn render_picker_column(
@@ -577,7 +594,11 @@ fn render_segment_button(
     let theme = appearance.theme();
     let label_owned = label.to_string();
     let font_family = appearance.ui_font_family();
-    let font_size = appearance.monospace_font_size();
+    // P4.9: bump font size and segment width per Figma. Body copy
+    // uses `monospace_font_size()` (~13); segments need to be slightly
+    // larger and roomier so they read as a control rather than inline
+    // text.
+    let font_size = appearance.monospace_font_size() + 1.;
     // Selected segment: lighter rounded background. Unselected: fully
     // transparent with muted text, blending into the outer container.
     let active_text_color = blended_colors::text_main(theme, theme.surface_1());
@@ -592,8 +613,8 @@ fn render_segment_button(
             })
             .finish();
         let mut container = Container::new(text)
-            .with_horizontal_padding(12.)
-            .with_vertical_padding(4.)
+            .with_horizontal_padding(20.)
+            .with_vertical_padding(6.)
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
         if is_active {
             container = container.with_background(segment_active_bg);

@@ -290,15 +290,20 @@ pub fn init(app: &mut AppContext) {
         // `current_orchestrate_action_id` at dispatch time; when no
         // such card is pending the actions are no-ops, mirroring how
         // `ExecuteNextPendingAction` behaves with no pending action.
-        // Reject (\u2303C) is intentionally NOT bound here \u2014 the universal
-        // ctrl-c cancel path already handles it.
         FixedBinding::new(
             "cmdorctrl-e",
             AIBlockAction::OrchestrateToggleEditCurrentCard,
             id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
         ),
+        // P4.10: Accept = Enter. The `ExecuteNextPendingAction`
+        // binding above also fires on Enter; its handler delegates to
+        // `handle_orchestrate_accept` when the pending action is an
+        // orchestrate tool call. This keymap entry is therefore a
+        // belt-and-suspenders fallback wired to the same key so Enter
+        // is the canonical Accept shortcut. The Accept button chip
+        // reflects this (rendered as the Enter glyph).
         FixedBinding::new(
-            "alt-enter",
+            "enter",
             AIBlockAction::OrchestrateAcceptCurrentCard,
             id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
         ),
@@ -309,6 +314,16 @@ pub fn init(app: &mut AppContext) {
             "escape",
             AIBlockAction::OrchestrateDiscardEditsCurrentCard,
             id!(AIBlock::ui_name()) & id!(ORCHESTRATE_EDITOR_OPEN),
+        ),
+        // P4.11: Esc rejects the orchestrate confirmation card when
+        // no editor is open. The handler checks
+        // `has_orchestrate_editor_open()` and bows out if any editor
+        // is open so the Discard Edits binding above wins in that
+        // case.
+        FixedBinding::new(
+            "escape",
+            AIBlockAction::OrchestrateRejectCurrentCard,
+            id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
         ),
     ]);
 
@@ -6095,9 +6110,20 @@ impl TypedActionView for AIBlock {
                 self.cancel_action(action_id, ctx);
             }
             AIBlockAction::ExecuteNextPendingAction => {
-                self.action_model.update(ctx, |action_model, ctx| {
-                    action_model.execute_next_action_for_user(self.conversation_id(), ctx)
-                });
+                // P4.10: if the next pending action is an orchestrate
+                // tool call, delegate to the orchestrate accept handler
+                // so Enter triggers the same path as clicking Accept on
+                // the confirmation card.
+                if let Some(orchestrate_id) = self.current_orchestrate_action_id(ctx) {
+                    log::info!(
+                        "[orchestrate-debug] ExecuteNextPendingAction -> orchestrate accept (action_id={orchestrate_id:?})"
+                    );
+                    self.handle_orchestrate_accept(&orchestrate_id, ctx);
+                } else {
+                    self.action_model.update(ctx, |action_model, ctx| {
+                        action_model.execute_next_action_for_user(self.conversation_id(), ctx)
+                    });
+                }
             }
             AIBlockAction::ExecuteRequestedAction { action_id } => {
                 self.action_model.update(ctx, |action_model, ctx| {
@@ -6710,17 +6736,40 @@ impl TypedActionView for AIBlock {
                 // (e.g. "Accept and \u2026") have not been speced yet.
             }
             AIBlockAction::OrchestrateAcceptCurrentCard => {
-                if let Some(action_id) = self.current_orchestrate_action_id(ctx) {
+                let resolved = self.current_orchestrate_action_id(ctx);
+                log::info!(
+                    "[orchestrate-debug] OrchestrateAcceptCurrentCard fired: resolved action_id={resolved:?}"
+                );
+                if let Some(action_id) = resolved {
                     self.handle_orchestrate_accept(&action_id, ctx);
                 }
             }
             AIBlockAction::OrchestrateRejectCurrentCard => {
-                if let Some(action_id) = self.current_orchestrate_action_id(ctx) {
+                // P4.11: if the editor is open on any card, the Esc
+                // binding for Discard Edits is the active path; bow
+                // out so we don't accidentally cancel the action when
+                // the user just wanted to close the editor.
+                if self.has_orchestrate_editor_open() {
+                    log::info!(
+                        "[orchestrate-debug] OrchestrateRejectCurrentCard suppressed: editor is open"
+                    );
+                    ctx.notify();
+                    return;
+                }
+                let resolved = self.current_orchestrate_action_id(ctx);
+                log::info!(
+                    "[orchestrate-debug] OrchestrateRejectCurrentCard fired: resolved action_id={resolved:?}"
+                );
+                if let Some(action_id) = resolved {
                     self.cancel_action(&action_id, ctx);
                 }
             }
             AIBlockAction::OrchestrateToggleEditCurrentCard => {
-                if let Some(action_id) = self.current_orchestrate_action_id(ctx) {
+                let resolved = self.current_orchestrate_action_id(ctx);
+                log::info!(
+                    "[orchestrate-debug] OrchestrateToggleEditCurrentCard fired: resolved action_id={resolved:?}"
+                );
+                if let Some(action_id) = resolved {
                     self.handle_orchestrate_toggle_edit(&action_id, ctx);
                 }
             }
@@ -6730,7 +6779,11 @@ impl TypedActionView for AIBlock {
                 // on `ORCHESTRATE_EDITOR_OPEN`, but we re-check here
                 // because action dispatch can also come from non-keymap
                 // code paths.
-                if let Some(action_id) = self.current_orchestrate_card_with_editor_open() {
+                let resolved = self.current_orchestrate_card_with_editor_open();
+                log::info!(
+                    "[orchestrate-debug] OrchestrateDiscardEditsCurrentCard fired: resolved action_id={resolved:?}"
+                );
+                if let Some(action_id) = resolved {
                     self.handle_orchestrate_toggle_edit(&action_id, ctx);
                 }
             }
@@ -6804,8 +6857,10 @@ impl AIBlock {
             Keystroke::parse("ctrl-c").expect("orchestrate reject keystroke literal must parse");
         let edit_keystroke =
             Keystroke::parse("cmdorctrl-e").expect("orchestrate edit keystroke literal must parse");
+        // P4.10: Accept = Enter. The chip on the Accept button shows
+        // the Enter glyph instead of Alt-Enter.
         let accept_keystroke =
-            Keystroke::parse("alt-enter").expect("orchestrate accept keystroke literal must parse");
+            Keystroke::parse("enter").expect("orchestrate accept keystroke literal must parse");
 
         let reject_button = CompactibleActionButton::new(
             "Reject".to_string(),
@@ -7026,7 +7081,20 @@ impl AIBlock {
 
         let model_picker = if needs_model {
             let action_id_for_picker = action_id.clone();
-            let initial_model_id = state.model_id.clone();
+            // P4.4: when the request didn't ship an explicit model_id
+            // (state.model_id is empty), default the picker to the
+            // current conversation's base model so the orchestrate
+            // confirmation card reflects the user's active model. The
+            // server-side request would otherwise leave the model field
+            // blank.
+            let initial_model_id = if state.model_id.trim().is_empty() {
+                self.model
+                    .base_model(ctx)
+                    .map(|id| id.to_string())
+                    .unwrap_or_default()
+            } else {
+                state.model_id.clone()
+            };
             let picker_padding_clone = picker_padding;
             let picker_corner_radius_clone = picker_corner_radius;
             let picker_background_clone = picker_background_warpui;
@@ -7051,7 +7119,9 @@ impl AIBlock {
                 // `SelectableArea` interaction. See `Dropdown::use_overlay_layer`.
                 dropdown.set_use_overlay_layer(false, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_menu_header_text_override(|t| format!("Model: {t}"));
+                // P4.2: top-bar shows the raw selected value, not
+                // "Model: <value>". Default header behaviour without
+                // an override matches that.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
                 dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
@@ -7108,7 +7178,7 @@ impl AIBlock {
                 let mut dropdown = Dropdown::<AIBlockAction>::new(ctx_dropdown);
                 dropdown.set_use_overlay_layer(false, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_menu_header_text_override(|t| format!("Harness: {t}"));
+                // P4.2: see model picker.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
                 dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
@@ -7169,7 +7239,10 @@ impl AIBlock {
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 dropdown.set_button_variant(ButtonVariant::Secondary);
                 dropdown.set_style(picker_styles_clone);
-                dropdown.set_menu_header_text_override(|t| format!("Environment: {t}"));
+                // P4.2: top-bar shows the raw env name, not
+                // "Environment: <name>". The placeholder "Environment:
+                // loading..." override below is only set when the env
+                // list is empty.
                 // Match the Dropdown-based pickers' top-bar height so
                 // all four pickers in the row are the same size. The
                 // default `FilterableDropdown` height is 30; the other
@@ -7248,7 +7321,7 @@ impl AIBlock {
                 let mut dropdown = Dropdown::<AIBlockAction>::new(ctx_dropdown);
                 dropdown.set_use_overlay_layer(false, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_menu_header_text_override(|t| format!("Host: {t}"));
+                // P4.2: see model picker.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
                 dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
