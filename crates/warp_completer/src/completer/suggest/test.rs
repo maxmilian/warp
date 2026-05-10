@@ -271,6 +271,63 @@ pub fn test_files_includes_directories() {
     );
 }
 
+/// Issue #2694: an unknown command (no signature in the registry) MUST receive
+/// file-path completions when the caller opts into the `FilePaths` fallback,
+/// and MUST receive nothing when the caller opts into `None`. The
+/// "second-chance" logic in `app/src/terminal/input.rs` relies on this contract
+/// to recover from empty native shell completions for commands like `python`.
+#[test]
+pub fn test_unknown_command_fallback_strategy_contract() {
+    let path_ctx = MockPathCompletionContext::default().with_entries_in_pwd([
+        EngineDirEntry::test_file("script.py"),
+        EngineDirEntry::test_file("readme.md"),
+        EngineDirEntry::test_dir("src"),
+    ]);
+    // Empty registry: `python` deliberately has no signature, mirroring real-world state.
+    let ctx = FakeCompletionContext::new(create_test_command_registry([]))
+        .with_path_completion_context(path_ctx);
+
+    let with_fallback = suggestions_for_test(
+        "python ",
+        "python ".len(),
+        CompleterOptions {
+            match_strategy: MatchStrategy::CaseInsensitive,
+            fallback_strategy: CompletionsFallbackStrategy::FilePaths,
+            suggest_file_path_completions_only: false,
+            parse_quotes_as_literals: false,
+        },
+        &ctx,
+    )
+    .map(|res| {
+        res.suggestions
+            .into_iter()
+            .map(|s| s.suggestion.display.to_string())
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    assert_eq!(with_fallback, vec!["readme.md", "script.py", "src/"]);
+
+    let without_fallback = suggestions_for_test(
+        "python ",
+        "python ".len(),
+        CompleterOptions {
+            match_strategy: MatchStrategy::CaseInsensitive,
+            fallback_strategy: CompletionsFallbackStrategy::None,
+            suggest_file_path_completions_only: false,
+            parse_quotes_as_literals: false,
+        },
+        &ctx,
+    );
+    assert!(
+        without_fallback
+            .as_ref()
+            .map(|r| r.suggestions.is_empty())
+            .unwrap_or(true),
+        "expected no suggestions for unknown command with `None` fallback, got: {:?}",
+        without_fallback,
+    );
+}
+
 #[test]
 pub fn test_completes_paths_with_space() {
     let registry = create_test_command_registry([test_signature(), cd_signature()]);

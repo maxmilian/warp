@@ -11302,44 +11302,87 @@ impl Input {
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
+                    let completer_options = CompleterOptions {
+                        match_strategy: matcher,
+                        fallback_strategy,
+                        suggest_file_path_completions_only: input_type.is_ai(),
+                        parse_quotes_as_literals: input_type.is_ai(),
+                    };
                     let suggestions = completer::suggestions(
                         before_cursor_text.as_str(),
                         cursor_position,
                         session_env_vars.as_ref(),
-                        CompleterOptions {
-                            match_strategy: matcher,
-                            fallback_strategy,
-                            suggest_file_path_completions_only: input_type.is_ai(),
-                            parse_quotes_as_literals: input_type.is_ai(),
-                        },
+                        completer_options,
                         &completion_context,
                     )
                     .await;
+
+                    let native_keybinding_fallback_eligible = use_native_shell_completions
+                        && matches!(completions_trigger, CompletionsTrigger::Keybinding);
 
                     let suggestions = match suggestions {
                         Some(s) if !s.suggestions.is_empty() && !force_native_shell_completions => {
                             Some(s)
                         }
-                        _ => native_results_fut.await.map(|results| {
-                            let suggestions = results.into_iter().map(Into::into).collect_vec();
+                        engine_suggestions => {
+                            let native = native_results_fut.await.map(|results| {
+                                let suggestions =
+                                    results.into_iter().map(Into::into).collect_vec();
 
-                            let token_end = cursor_position;
-                            // Within the section of the buffer from the start
-                            // to the end of this token...
-                            let token_start = buffer_text[0..token_end]
-                                // Find the last whitespace char before the token end.
-                                .rfind(char::is_whitespace)
-                                // If we find one, the token start is the next char.
-                                .map(|pos| pos + 1)
-                                // Otherwise, the start is the beginning of the buffer.
-                                .unwrap_or_default();
+                                let token_end = cursor_position;
+                                // Within the section of the buffer from the start
+                                // to the end of this token...
+                                let token_start = buffer_text[0..token_end]
+                                    // Find the last whitespace char before the token end.
+                                    .rfind(char::is_whitespace)
+                                    // If we find one, the token start is the next char.
+                                    .map(|pos| pos + 1)
+                                    // Otherwise, the start is the beginning of the buffer.
+                                    .unwrap_or_default();
 
-                            SuggestionResults {
-                                replacement_span: (token_start, token_end).into(),
-                                suggestions,
-                                match_strategy: MatchStrategy::Fuzzy,
+                                SuggestionResults {
+                                    replacement_span: (token_start, token_end).into(),
+                                    suggestions,
+                                    match_strategy: MatchStrategy::Fuzzy,
+                                }
+                            });
+
+                            let native_has_results = native
+                                .as_ref()
+                                .is_some_and(|n| !n.suggestions.is_empty());
+                            if native_has_results {
+                                native
+                            } else if native_keybinding_fallback_eligible {
+                                // Issue #2694: when native shell completions are enabled,
+                                // `fallback_strategy` is `None`, so the engine never offers
+                                // file-path completions for unknown commands (e.g. `python`).
+                                // If native zsh also returned nothing for a manual Tab press,
+                                // re-run the engine with `FilePaths` so the user still gets a
+                                // file-path fallback as a last resort.
+                                let second_chance = completer::suggestions(
+                                    before_cursor_text.as_str(),
+                                    cursor_position,
+                                    session_env_vars.as_ref(),
+                                    CompleterOptions {
+                                        fallback_strategy:
+                                            CompletionsFallbackStrategy::FilePaths,
+                                        ..completer_options
+                                    },
+                                    &completion_context,
+                                )
+                                .await;
+                                let second_chance_has_results = second_chance
+                                    .as_ref()
+                                    .is_some_and(|s| !s.suggestions.is_empty());
+                                if second_chance_has_results {
+                                    second_chance
+                                } else {
+                                    native.or(engine_suggestions)
+                                }
+                            } else {
+                                native.or(engine_suggestions)
                             }
-                        }),
+                        }
                     };
 
                     (suggestions, completions_trigger, editor_snapshot)

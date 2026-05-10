@@ -1,9 +1,31 @@
 # Issue #2694 Investigation — `python <TAB>` file completion broken in Warp
 
 **Issue:** https://github.com/warpdotdev/warp/issues/2694
-**Status:** Root-cause investigation (not implemented yet)
-**Date:** 2026-05-10 (updated with verification round 2)
+**Status:** Fix implemented (Option E — second-chance fallback)
+**Date:** 2026-05-10 (round 3 — implementation)
 **Branch:** `claude/python-completion-research-33n7s`
+
+## Implementation summary
+
+Final approach: **Option E — second-chance FilePaths fallback**, chosen over the
+plumbing-heavy `is_fallback` flag.
+
+- `app/src/terminal/input.rs:11302-11392`: when both the engine (run with the
+  existing `fallback_strategy = None` in native mode) and zsh native return
+  empty for a manual `Tab` press, re-run the engine once with
+  `CompletionsFallbackStrategy::FilePaths` to provide file-path completions as
+  a last resort.
+- AsYouType remains on `None` to avoid spamming file lists per keystroke.
+- When zsh native returns non-empty results, they win — preserves zsh's
+  command-aware filtering (e.g. `_python` → `*.py`).
+- Test: `crates/warp_completer/src/completer/suggest/test.rs::test_unknown_command_fallback_strategy_contract`
+  pins the contract that the engine returns file paths for unknown commands
+  with `FilePaths`, and nothing with `None`.
+
+Trade-off vs. plumbing `is_fallback`: one extra completer call when truly
+nothing else worked (rare, only on Tab press). The extra call is cheap because
+the spec lookup misses fast for unknown commands — the dominant cost is the
+file-system read which we'd have to do anyway.
 
 ## TL;DR (verified)
 
