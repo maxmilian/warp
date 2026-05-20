@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use warpui::{
-    elements::ChildView, ui_components::components::UiComponentStyles, AppContext, Element, Entity,
-    TypedActionView, View, ViewContext, ViewHandle,
+    elements::ChildView,
+    keymap::{macros::*, FixedBinding},
+    ui_components::components::UiComponentStyles,
+    AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -18,6 +20,43 @@ const DEFAULT_DROPDOWN_WIDTH: f32 = 380.;
 /// Placeholder text shown in the dropdown top bar while branches are loading.
 const LOADING_PLACEHOLDER: &str = "Fetching branches\u{2026}";
 
+/// Keymap-context flag advertised by [`BranchPicker`] only while its dropdown
+/// is collapsed. See [`crate::tab_configs::repo_picker`] for why the Space
+/// binding is gated on a collapsed-only flag rather than an ancestor-level
+/// `!id!("EditorView")` guard (issue #11138).
+const BRANCH_PICKER_COLLAPSED: &str = "BranchPickerCollapsed";
+
+/// Registers [`BranchPicker`]'s Space-to-toggle fixed binding: a focused,
+/// collapsed picker opens on Space; an expanded one leaves Space to its
+/// filter editor.
+pub fn init(app: &mut AppContext) {
+    app.register_fixed_bindings(vec![FixedBinding::new(
+        "space",
+        BranchPickerAction::ToggleDropdown,
+        id!(BRANCH_PICKER_COLLAPSED),
+    )]);
+}
+
+/// Builds [`BranchPicker`]'s keymap context. A pure function so the
+/// collapsed-flag gating is unit-testable without a UI harness.
+fn build_keymap_context(is_expanded: bool) -> warpui::keymap::Context {
+    let mut context = <BranchPicker as View>::default_keymap_context();
+    if !is_expanded {
+        context.set.insert(BRANCH_PICKER_COLLAPSED);
+    }
+    context
+}
+
+/// Actions dispatched within a [`BranchPicker`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum BranchPickerAction {
+    /// Commits a branch selection by name.
+    Select(String),
+    /// Toggles the dropdown open/closed. Dispatched by the Space fixed
+    /// binding while the collapsed picker holds focus.
+    ToggleDropdown,
+}
+
 /// A filterable dropdown that lists local git branches for the given repo path.
 ///
 /// Created with an optional `cwd` — if `None`, the picker starts with the
@@ -26,7 +65,7 @@ const LOADING_PLACEHOLDER: &str = "Fetching branches\u{2026}";
 ///
 /// Emits the selected branch name (a `String`) as its event.
 pub struct BranchPicker {
-    dropdown: ViewHandle<FilterableDropdown<String>>,
+    dropdown: ViewHandle<FilterableDropdown<BranchPickerAction>>,
     /// Pre-selected default value from the TOML `default =` field, used to
     /// restore a selection after the async branch list arrives.
     default_value: Option<String>,
@@ -94,7 +133,10 @@ impl BranchPicker {
             let default = default.clone();
             picker.dropdown.update(ctx, |dropdown, ctx| {
                 dropdown.set_items(
-                    vec![DropdownItem::new(default.clone(), default.clone())],
+                    vec![DropdownItem::new(
+                        default.clone(),
+                        BranchPickerAction::Select(default.clone()),
+                    )],
                     ctx,
                 );
                 dropdown.set_selected_by_name(default.as_str(), ctx);
@@ -126,7 +168,10 @@ impl BranchPicker {
             dropdown.set_disabled(ctx);
             // Show loading text in the dropdown top bar so the modal
             // doesn't shift layout while the fetch is in-flight.
-            let placeholder = DropdownItem::new(LOADING_PLACEHOLDER.to_string(), String::new());
+            let placeholder = DropdownItem::new(
+                LOADING_PLACEHOLDER.to_string(),
+                BranchPickerAction::Select(String::new()),
+            );
             dropdown.set_items(vec![placeholder], ctx);
             dropdown.set_selected_by_name(LOADING_PLACEHOLDER, ctx);
         });
@@ -194,15 +239,27 @@ impl BranchPicker {
                 }
 
                 // Main branches first, then the rest in recency order.
-                let mut items: Vec<DropdownItem<String>> = sort_branches_main_first(&branches)
-                    .map(|entry| DropdownItem::new(entry.name.clone(), entry.name.clone()))
-                    .collect();
+                let mut items: Vec<DropdownItem<BranchPickerAction>> =
+                    sort_branches_main_first(&branches)
+                        .map(|entry| {
+                            DropdownItem::new(
+                                entry.name.clone(),
+                                BranchPickerAction::Select(entry.name.clone()),
+                            )
+                        })
+                        .collect();
 
                 // Add the default as the first item if it isn't already in the list
                 // (e.g. the user typed a branch name that doesn't exist locally yet).
                 if let Some(ref default) = me.default_value {
                     if !branches.iter().any(|entry| entry.name == *default) {
-                        items.insert(0, DropdownItem::new(default.clone(), default.clone()));
+                        items.insert(
+                            0,
+                            DropdownItem::new(
+                                default.clone(),
+                                BranchPickerAction::Select(default.clone()),
+                            ),
+                        );
                     }
                 }
 
@@ -285,15 +342,30 @@ impl View for BranchPicker {
         "BranchPicker"
     }
 
+    /// Advertises [`BRANCH_PICKER_COLLAPSED`] while the dropdown is closed so
+    /// the Space fixed binding only toggles a focused, collapsed picker.
+    fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
+        build_keymap_context(self.dropdown.as_ref(app).is_expanded())
+    }
+
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         ChildView::new(&self.dropdown).finish()
     }
 }
 
 impl TypedActionView for BranchPicker {
-    type Action = String;
+    type Action = BranchPickerAction;
 
-    fn handle_action(&mut self, action: &String, ctx: &mut ViewContext<Self>) {
-        ctx.emit(action.clone());
+    fn handle_action(&mut self, action: &BranchPickerAction, ctx: &mut ViewContext<Self>) {
+        match action {
+            BranchPickerAction::Select(name) => ctx.emit(name.clone()),
+            BranchPickerAction::ToggleDropdown => {
+                self.toggle_dropdown(ctx);
+            }
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "branch_picker_tests.rs"]
+mod tests;

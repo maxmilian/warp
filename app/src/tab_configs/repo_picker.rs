@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use warp_util::path::user_friendly_path;
 use warpui::{
     elements::{Border, ChildView, Container, Hoverable, MouseStateHandle, Text},
+    keymap::{macros::*, FixedBinding},
     platform::Cursor,
     text_layout::ClipConfig,
     ui_components::components::UiComponentStyles,
@@ -20,6 +21,41 @@ const DEFAULT_DROPDOWN_WIDTH: f32 = 380.;
 
 /// Label for the sticky "Add new repo..." footer at the bottom of the picker.
 const ADD_NEW_REPO_LABEL: &str = "+ Add new repo...";
+
+/// Keymap-context flag advertised by [`RepoPicker`] only while its dropdown
+/// is collapsed. The Space-to-open binding is scoped to this flag so it fires
+/// solely when the closed picker itself holds focus — never while the
+/// expanded dropdown's filter editor is focused, where Space must reach that
+/// editor as a literal character.
+///
+/// `ContextPredicate` evaluation is per-view, so an ancestor-level guard like
+/// `!id!("EditorView")` cannot observe a descendant editor's focus. Gating on
+/// a flag the picker advertises only while collapsed is what keeps the
+/// binding focus-correct (see issue #11138).
+const REPO_PICKER_COLLAPSED: &str = "RepoPickerCollapsed";
+
+/// Registers [`RepoPicker`]'s Space-to-toggle fixed binding.
+///
+/// Embodies "if the dropdown is focused, the dropdown owns Space": a focused,
+/// collapsed picker opens on Space; an expanded one leaves Space to its
+/// filter editor. Every embedder of a `RepoPicker` inherits this.
+pub fn init(app: &mut AppContext) {
+    app.register_fixed_bindings(vec![FixedBinding::new(
+        "space",
+        RepoPickerAction::ToggleDropdown,
+        id!(REPO_PICKER_COLLAPSED),
+    )]);
+}
+
+/// Builds [`RepoPicker`]'s keymap context. Split out as a pure function so
+/// the collapsed-flag gating is unit-testable without a UI harness.
+fn build_keymap_context(is_expanded: bool) -> warpui::keymap::Context {
+    let mut context = <RepoPicker as View>::default_keymap_context();
+    if !is_expanded {
+        context.set.insert(REPO_PICKER_COLLAPSED);
+    }
+    context
+}
 
 /// A filterable dropdown listing known repos (from `PersistedWorkspace`), with a
 /// sticky "+ Add new repo..." footer that is always visible even when scrolling.
@@ -39,6 +75,9 @@ pub struct RepoPicker {
 pub enum RepoPickerAction {
     Select(String),
     AddNewRepo,
+    /// Toggles the dropdown open/closed. Dispatched by the Space fixed
+    /// binding while the collapsed picker holds focus.
+    ToggleDropdown,
 }
 
 pub enum RepoPickerEvent {
@@ -222,6 +261,12 @@ impl View for RepoPicker {
         "RepoPicker"
     }
 
+    /// Advertises [`REPO_PICKER_COLLAPSED`] while the dropdown is closed so
+    /// the Space fixed binding only toggles a focused, collapsed picker.
+    fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
+        build_keymap_context(self.dropdown.as_ref(app).is_expanded())
+    }
+
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         ChildView::new(&self.dropdown).finish()
     }
@@ -244,6 +289,13 @@ impl TypedActionView for RepoPicker {
                 });
                 ctx.emit(RepoPickerEvent::RequestAddRepo);
             }
+            RepoPickerAction::ToggleDropdown => {
+                self.toggle_dropdown(ctx);
+            }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "repo_picker_tests.rs"]
+mod tests;

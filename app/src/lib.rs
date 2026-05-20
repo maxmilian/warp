@@ -1614,6 +1614,8 @@ pub(crate) fn initialize_app(
     billing::shared_objects_creation_denied_modal::init(ctx);
     tab_configs::new_worktree_modal::init(ctx);
     tab_configs::params_modal::init(ctx);
+    tab_configs::repo_picker::init(ctx);
+    tab_configs::branch_picker::init(ctx);
     ai::blocklist::init(ctx);
     ai::blocklist::block::status_bar::init(ctx);
     drive::index::init(ctx);
