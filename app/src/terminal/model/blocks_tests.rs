@@ -2239,3 +2239,47 @@ fn test_latest_ai_block_index_skips_trailing_non_ai_rich_content() {
     // The trailing non-AI rich content must not change the answer.
     assert_eq!(block_list.latest_ai_block_index(), Some(ai_index));
 }
+
+#[test]
+fn test_latest_ai_block_index_skips_hidden_ai_block() {
+    // Ensure the `!should_hide` filter is exercised: a conversation-scoped AIBlock
+    // becomes hidden when AgentViewState is Inactive (should_hide_for_agent_view_state
+    // returns true for any item with agent_view_conversation_id.is_some() in Inactive state).
+    // The method must skip it and land on the earlier, visible AIBlock instead.
+    FeatureFlag::AgentView.set_enabled(true);
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+
+    // Append a visible AIBlock (no conversation scope → not hidden in Inactive state).
+    block_list.append_rich_content(
+        RichContentItem::new_for_test(Some(RichContentType::AIBlock), EntityId::new(), None),
+        false,
+    );
+    let visible_index = block_list
+        .latest_ai_block_index()
+        .expect("visible AIBlock should be found");
+
+    // Append a later AIBlock that is scoped to a conversation.
+    // After set_agent_view_state(Inactive), update_blocks_and_sumtree recomputes
+    // should_hide via should_hide_for_agent_view_state, which returns true for
+    // agent_view_conversation_id.is_some() in the Inactive branch.
+    let conversation_id = AIConversationId::new();
+    block_list.append_rich_content(
+        RichContentItem::new_for_test(
+            Some(RichContentType::AIBlock),
+            EntityId::new(),
+            Some(conversation_id),
+        ),
+        false,
+    );
+
+    // Transition to Inactive — the conversation-scoped AIBlock becomes hidden.
+    block_list.set_agent_view_state(AgentViewState::Inactive);
+
+    // latest_ai_block_index must skip the hidden tail block and return the earlier visible one.
+    assert_eq!(
+        block_list.latest_ai_block_index(),
+        Some(visible_index),
+        "hidden conversation-scoped AIBlock must be skipped"
+    );
+}
