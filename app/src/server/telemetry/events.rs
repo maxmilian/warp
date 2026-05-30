@@ -1504,6 +1504,7 @@ pub enum TelemetryEvent {
         enable_bookmark: bool,
     },
     JumpToBookmark,
+    JumpToLatestAgentMessage,
     JumpToBottomofBlockButtonClicked,
     ToggleJumpToBottomofBlockButton {
         enabled: bool,
@@ -4152,6 +4153,7 @@ impl TelemetryEvent {
             | TelemetryEvent::EditedInputBeforePrecmd
             | TelemetryEvent::TriedToExecuteBeforePrecmd
             | TelemetryEvent::JumpToBookmark
+            | TelemetryEvent::JumpToLatestAgentMessage
             | TelemetryEvent::JumpToBottomofBlockButtonClicked
             | TelemetryEvent::ShowInFileExplorer
             | TelemetryEvent::OpenLaunchConfigSaveModal
@@ -4926,6 +4928,7 @@ impl TelemetryEvent {
             | TelemetryEvent::ThinStrokesSettingChanged { .. }
             | TelemetryEvent::BookmarkBlockToggled { .. }
             | TelemetryEvent::JumpToBookmark
+            | TelemetryEvent::JumpToLatestAgentMessage
             | TelemetryEvent::JumpToBottomofBlockButtonClicked
             | TelemetryEvent::ToggleJumpToBottomofBlockButton { .. }
             | TelemetryEvent::ToggleShowBlockDividers { .. }
@@ -5493,6 +5496,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::ThinStrokesSettingChanged => EnablementState::Always,
             Self::BookmarkBlockToggled => EnablementState::Always,
             Self::JumpToBookmark => EnablementState::Always,
+            Self::JumpToLatestAgentMessage => EnablementState::Always,
             Self::JumpToBottomofBlockButtonClicked => EnablementState::Always,
             Self::ToggleJumpToBottomofBlockButton => EnablementState::Always,
             Self::OpenLink => EnablementState::Always,
@@ -6007,6 +6011,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::ThinStrokesSettingChanged => "Thin Strokes Setting Changed",
             Self::BookmarkBlockToggled => "Toggled Bookmark Block",
             Self::JumpToBookmark => "Jumped to Bookmark Block",
+            Self::JumpToLatestAgentMessage => "Jumped to Latest Agent Message",
             Self::JumpToBottomofBlockButtonClicked => "Jumped to Bottom of Block Button Clicked",
             Self::OpenLink => "Opened Link",
             Self::OpenChangelogLink => "Opened Changelog Link",
@@ -6629,6 +6634,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             }
             Self::BookmarkBlockToggled => "Bookmarked or unbookmarked Block",
             Self::JumpToBookmark => "Jumped to bookmarked Block",
+            Self::JumpToLatestAgentMessage => "Jumped to the latest agent message",
             Self::JumpToBottomofBlockButtonClicked => {
                 "Used the button to jump to the bottom of a Block"
             }
