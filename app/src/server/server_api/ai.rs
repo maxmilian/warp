@@ -160,6 +160,7 @@ use crate::ai_assistant::{AIGeneratedCommand, GenerateCommandsFromNaturalLanguag
 use crate::drive::workflows::ai_assist::{GeneratedCommandMetadata, GeneratedCommandMetadataError};
 use crate::persistence::model::ConversationUsageMetadata;
 use crate::server::graphql::{get_request_context, get_user_facing_error_message};
+use crate::server::team_scope::RequestTeamScope;
 use crate::terminal::model::block::SerializedBlock;
 #[cfg(not(feature = "agent_mode_evals"))]
 use crate::{
@@ -174,6 +175,7 @@ pub struct TaskStatusUpdate {
     pub message: String,
     pub error_code: Option<PlatformErrorCode>,
 }
+
 fn public_api_user_query_mode(mode: UserQueryMode) -> &'static str {
     match mode {
         UserQueryMode::Normal => "normal",
@@ -1225,6 +1227,7 @@ pub trait AIClient: 'static + Send + Sync {
     async fn get_available_harnesses(&self) -> Result<Vec<HarnessAvailability>, anyhow::Error>;
     async fn list_connected_self_hosted_workers(
         &self,
+        team_scope: RequestTeamScope,
     ) -> Result<ListConnectedSelfHostedWorkersResponse, anyhow::Error>;
 
     /// Fetches the free-tier available models without requiring authentication.
@@ -1261,6 +1264,7 @@ pub trait AIClient: 'static + Send + Sync {
         environment_uid: Option<String>,
         parent_run_id: Option<String>,
         config: Option<AgentConfigSnapshot>,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<AmbientAgentTaskId, anyhow::Error>;
 
     /// Updates a run's server-side record. Every argument is independently optional; omitted
@@ -1283,6 +1287,7 @@ pub trait AIClient: 'static + Send + Sync {
     async fn spawn_agent(
         &self,
         request: SpawnAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<SpawnAgentResponse, anyhow::Error>;
 
     /// Allocate an initial snapshot token and presigned upload URLs for staging local-to-cloud
@@ -1310,6 +1315,7 @@ pub trait AIClient: 'static + Send + Sync {
         &self,
         limit: i32,
         filter: TaskListFilter,
+        request_team_scope: Option<RequestTeamScope>,
     ) -> anyhow::Result<Vec<AmbientAgentTask>, anyhow::Error>;
 
     /// List agent runs and return the raw server JSON response.
@@ -1317,6 +1323,7 @@ pub trait AIClient: 'static + Send + Sync {
         &self,
         limit: i32,
         filter: TaskListFilter,
+        request_team_scope: Option<RequestTeamScope>,
     ) -> anyhow::Result<serde_json::Value, anyhow::Error>;
 
     async fn get_ambient_agent_task(
@@ -1395,11 +1402,18 @@ pub trait AIClient: 'static + Send + Sync {
     async fn list_skills(
         &self,
         repo: Option<String>,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<Vec<AgentSkillItem>, anyhow::Error>;
 
-    async fn list_agents(&self) -> anyhow::Result<Vec<AgentResponse>, anyhow::Error>;
+    async fn list_agents(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<Vec<AgentResponse>, anyhow::Error>;
 
-    async fn list_agents_raw(&self) -> anyhow::Result<serde_json::Value, anyhow::Error>;
+    async fn list_agents_raw(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<serde_json::Value, anyhow::Error>;
 
     async fn get_agent(&self, uid: &str) -> anyhow::Result<AgentResponse, anyhow::Error>;
 
@@ -1408,11 +1422,13 @@ pub trait AIClient: 'static + Send + Sync {
     async fn create_agent(
         &self,
         request: CreateAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<AgentResponse, anyhow::Error>;
 
     async fn create_agent_raw(
         &self,
         request: CreateAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<serde_json::Value, anyhow::Error>;
 
     async fn update_agent(
@@ -1429,7 +1445,10 @@ pub trait AIClient: 'static + Send + Sync {
 
     async fn delete_agent(&self, uid: &str) -> anyhow::Result<(), anyhow::Error>;
 
-    async fn list_memory_stores(&self) -> anyhow::Result<Vec<MemoryStoreItem>, anyhow::Error>;
+    async fn list_memory_stores(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<Vec<MemoryStoreItem>, anyhow::Error>;
 
     async fn list_memory_store_memories(
         &self,
@@ -1625,6 +1644,22 @@ fn into_file_artifact_record(
 }
 
 impl ServerApi {
+    async fn get_public_api_with_team_scope<R>(
+        &self,
+        path: &str,
+        request_team_scope: Option<RequestTeamScope>,
+    ) -> anyhow::Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        self.base_client
+            .get_public_api_for_team(
+                path,
+                request_team_scope.and_then(RequestTeamScope::team_uid),
+            )
+            .await
+    }
+
     pub(crate) async fn send_agent_message_for_task(
         &self,
         task_id: &AmbientAgentTaskId,
@@ -2265,6 +2300,7 @@ impl AIClient for ServerApi {
         environment_uid: Option<String>,
         parent_run_id: Option<String>,
         config: Option<AgentConfigSnapshot>,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<AmbientAgentTaskId, anyhow::Error> {
         if let Some(config) = &config {
             if let Some(worker_host) = &config.worker_host {
@@ -2296,7 +2332,9 @@ impl AIClient for ServerApi {
         };
 
         let operation = CreateAgentTask::build(variables);
-        let response = self.send_graphql_request(operation, None).await?;
+        let response = self
+            .send_graphql_request_for_team(operation, team_scope)
+            .await?;
 
         match response.create_agent_task {
             CreateAgentTaskResult::CreateAgentTaskOutput(output) => output
@@ -2360,15 +2398,20 @@ impl AIClient for ServerApi {
     async fn spawn_agent(
         &self,
         request: SpawnAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<SpawnAgentResponse, anyhow::Error> {
-        let response: SpawnAgentResponse = self.post_public_api("agent/run", &request).await?;
+        debug_assert_eq!(request.team, Some(team_scope.team_uid().is_some()));
+        let response: SpawnAgentResponse = self
+            .post_public_api_for_team("agent/run", &request, team_scope)
+            .await?;
         Ok(response)
     }
 
     async fn list_connected_self_hosted_workers(
         &self,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<ListConnectedSelfHostedWorkersResponse, anyhow::Error> {
-        self.get_public_api(CONNECTED_SELF_HOSTED_WORKERS_PATH)
+        self.get_public_api_for_team(CONNECTED_SELF_HOSTED_WORKERS_PATH, team_scope)
             .await
     }
 
@@ -2410,9 +2453,12 @@ impl AIClient for ServerApi {
         &self,
         limit: i32,
         filter: TaskListFilter,
+        request_team_scope: Option<RequestTeamScope>,
     ) -> anyhow::Result<Vec<AmbientAgentTask>, anyhow::Error> {
         let url = build_list_agent_runs_url(limit, &filter);
-        let response: ListRunsResponse = self.get_public_api(&url).await?;
+        let response: ListRunsResponse = self
+            .get_public_api_with_team_scope(&url, request_team_scope)
+            .await?;
         Ok(response.runs)
     }
 
@@ -2420,9 +2466,12 @@ impl AIClient for ServerApi {
         &self,
         limit: i32,
         filter: TaskListFilter,
+        request_team_scope: Option<RequestTeamScope>,
     ) -> anyhow::Result<serde_json::Value, anyhow::Error> {
         let url = build_list_agent_runs_url(limit, &filter);
-        let response: serde_json::Value = self.get_public_api(&url).await?;
+        let response: serde_json::Value = self
+            .get_public_api_with_team_scope(&url, request_team_scope)
+            .await?;
         Ok(response)
     }
 
@@ -2652,16 +2701,22 @@ impl AIClient for ServerApi {
     async fn list_skills(
         &self,
         repo: Option<String>,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<Vec<AgentSkillItem>, anyhow::Error> {
         let path = match repo {
             Some(repo) => format!("agent?repo={}", urlencoding::encode(&repo)),
             None => "agent".to_string(),
         };
-        let response: ListSkillsResponse = self.get_public_api(&path).await?;
+        let response: ListSkillsResponse = self.get_public_api_for_team(&path, team_scope).await?;
         Ok(response.agents)
     }
-    async fn list_memory_stores(&self) -> anyhow::Result<Vec<MemoryStoreItem>, anyhow::Error> {
-        let response: ListMemoryStoresResponse = self.get_public_api("memory_stores").await?;
+    async fn list_memory_stores(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<Vec<MemoryStoreItem>, anyhow::Error> {
+        let response: ListMemoryStoresResponse = self
+            .get_public_api_for_team("memory_stores", team_scope)
+            .await?;
         Ok(response.memory_stores)
     }
 
@@ -2762,13 +2817,21 @@ impl AIClient for ServerApi {
         Ok(response.versions)
     }
 
-    async fn list_agents(&self) -> anyhow::Result<Vec<AgentResponse>, anyhow::Error> {
-        let response: ListAgentsResponse = self.get_public_api("agent/identities").await?;
+    async fn list_agents(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<Vec<AgentResponse>, anyhow::Error> {
+        let response: ListAgentsResponse = self
+            .get_public_api_for_team("agent/identities", team_scope)
+            .await?;
         Ok(response.agents)
     }
-
-    async fn list_agents_raw(&self) -> anyhow::Result<serde_json::Value, anyhow::Error> {
-        self.get_public_api("agent/identities").await
+    async fn list_agents_raw(
+        &self,
+        team_scope: RequestTeamScope,
+    ) -> anyhow::Result<serde_json::Value, anyhow::Error> {
+        self.get_public_api_for_team("agent/identities", team_scope)
+            .await
     }
 
     async fn get_agent(&self, uid: &str) -> anyhow::Result<AgentResponse, anyhow::Error> {
@@ -2782,15 +2845,19 @@ impl AIClient for ServerApi {
     async fn create_agent(
         &self,
         request: CreateAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<AgentResponse, anyhow::Error> {
-        self.post_public_api("agent/identities", &request).await
+        self.post_public_api_for_team("agent/identities", &request, team_scope)
+            .await
     }
 
     async fn create_agent_raw(
         &self,
         request: CreateAgentRequest,
+        team_scope: RequestTeamScope,
     ) -> anyhow::Result<serde_json::Value, anyhow::Error> {
-        self.post_public_api("agent/identities", &request).await
+        self.post_public_api_for_team("agent/identities", &request, team_scope)
+            .await
     }
 
     async fn update_agent(

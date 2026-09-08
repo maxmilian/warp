@@ -195,7 +195,9 @@ use crate::ai::connected_self_hosted_workers::{
 use crate::ai::conversation_export::export_conversation_markdown;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
-use crate::ai::harness_availability::HarnessAvailabilityModel;
+use crate::ai::harness_availability::{
+    CloudAgentStartBlocker, HarnessAvailabilityModel, cloud_agent_start_blocker,
+};
 use crate::ai::llms::{LLMPreferences, LLMPreferencesEvent};
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::ai::predict::next_command_model::{
@@ -323,10 +325,13 @@ use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::ambient_agent::{
     AuthSecretFtuxView, AuthSecretFtuxViewEvent, AuthSecretSelector, AuthSecretSelectorEvent,
     HarnessSelector, HarnessSelectorEvent, HostSelector, HostSelectorEvent, NakedHeaderButtonTheme,
+    cloud_agent_team_required_toast_message,
 };
+use crate::terminal::view::init::{CAN_ATTACH_FILE_KEY, CLI_AGENT_SESSION_ACTIVE_KEY};
 use crate::terminal::view::inline_banner::{PromptSuggestionsEvent, PromptSuggestionsView};
 use crate::terminal::view::{
-    AIQueryRouting, CodeDiffAction, resolve_ai_query_routing, resolve_ambient_agent_task_id,
+    AIQueryRouting, CodeDiffAction, file_attach_allowed_for_shared_session,
+    resolve_ai_query_routing, resolve_ambient_agent_task_id,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -2565,6 +2570,10 @@ impl Input {
             if !affects_this_window {
                 return;
             }
+            let scope = UserWorkspaces::as_ref(ctx).team_context_for_operation(ctx);
+            ConnectedSelfHostedWorkersModel::handle(ctx).update(ctx, |model, ctx| {
+                model.refresh(&scope, ctx);
+            });
             // `None` has to be applied, not skipped: it means the window's team configures no
             // self-hosted default, and leaving the previous value in place would keep the
             // selector and the run config pointed at another team's worker.
@@ -7000,6 +7009,12 @@ impl Input {
         if did_start_listening {
             self.focus_input_box(ctx);
         }
+    }
+
+    pub(crate) fn attach_file(&mut self, ctx: &mut ViewContext<Self>) {
+        self.agent_input_footer.update(ctx, |footer, ctx| {
+            footer.select_file(ctx);
+        });
     }
 
     fn select_image(&mut self, ctx: &mut ViewContext<Self>) {
@@ -14023,22 +14038,26 @@ impl Input {
                         .is_configuring_ambient_agent()
                 })
             {
-                if FeatureFlag::AgentHarness.is_enabled() {
-                    let availability = HarnessAvailabilityModel::as_ref(ctx);
-                    if !availability.has_any_enabled_harness() {
-                        let window_id = ctx.window_id();
-                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                            ts.add_ephemeral_toast(
-                                DismissibleToast::error(
-                                    "No agent harnesses are available. Contact your team admin."
-                                        .to_string(),
-                                ),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                        return;
-                    }
+                let team_required = UserWorkspaces::as_ref(ctx).cloud_agents_require_team();
+                let has_enabled_harness = !FeatureFlag::AgentHarness.is_enabled()
+                    || HarnessAvailabilityModel::as_ref(ctx).has_any_enabled_harness();
+                let blocker_message =
+                    match cloud_agent_start_blocker(team_required, has_enabled_harness) {
+                        Some(CloudAgentStartBlocker::TeamRequired) => {
+                            Some(cloud_agent_team_required_toast_message(ctx).to_string())
+                        }
+                        Some(CloudAgentStartBlocker::NoEnabledHarnesses) => Some(
+                            "No agent harnesses are available. Contact your team admin."
+                                .to_string(),
+                        ),
+                        None => None,
+                    };
+                if let Some(message) = blocker_message {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                        ts.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+                    });
+                    return;
                 }
 
                 let prompt = command.trim().to_owned();
@@ -16851,6 +16870,13 @@ impl View for Input {
             }
         }
 
+        if CLIAgentSessionsModel::as_ref(app)
+            .session(self.terminal_view_id)
+            .is_some()
+        {
+            ctx.set.insert(CLI_AGENT_SESSION_ACTIVE_KEY);
+        }
+
         if self.buffer_text(app).is_empty() {
             ctx.set.insert(flags::EMPTY_INPUT_BUFFER);
         }
@@ -16961,6 +16987,13 @@ impl View for Input {
         let model_lock = self.model.lock();
         ctx.set
             .insert(model_lock.shared_session_status().as_keymap_context());
+        if file_attach_allowed_for_shared_session(
+            model_lock.shared_session_status(),
+            self.ambient_agent_view_model(),
+            app,
+        ) {
+            ctx.set.insert(CAN_ATTACH_FILE_KEY);
+        }
 
         if model_lock
             .block_list()

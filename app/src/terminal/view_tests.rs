@@ -55,6 +55,7 @@ use crate::pane_group::pane::PaneStack;
 use crate::pane_group::{BackingView, TerminalPaneId};
 use crate::server::ids::{ClientId, SyncId};
 use crate::server::server_api::ai::SpawnAgentRequest;
+use crate::server::team_scope::RequestTeamScope;
 use crate::settings::import::model::ImportedConfigModel;
 use crate::settings::{AISettings, AppEditorSettings, RightClickBehavior, WarpPromptSeparator};
 use crate::terminal::alt_screen::should_intercept_mouse;
@@ -97,6 +98,7 @@ use crate::workspace::view::tests::{
     active_terminal, initialize_app as initialize_workspace_app, mock_workspace,
     start_tab_group_rename,
 };
+use crate::workspaces::user_workspaces::TeamlessScopeForTest;
 
 fn add_window_with_cloud_mode_terminal(app: &mut App) -> ViewHandle<TerminalView> {
     let tips_model = app.add_model(|_| Default::default());
@@ -3440,7 +3442,7 @@ fn cloud_mode_dispatched_agent_inserts_queued_user_query() {
                             mode: UserQueryMode::Normal,
                             config: None,
                             title: None,
-                            team: None,
+                            team: Some(false),
                             agent_identity_uid: None,
                             skill: None,
                             attachments: vec![],
@@ -3453,6 +3455,7 @@ fn cloud_mode_dispatched_agent_inserts_queued_user_query() {
                             snapshot_disabled: None,
                             orchestration_handoff: None,
                         },
+                        RequestTeamScope::from_scope(&TeamlessScopeForTest),
                         ctx,
                     );
                 });
