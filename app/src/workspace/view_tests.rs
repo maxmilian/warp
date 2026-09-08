@@ -18,7 +18,7 @@ use warp_editor::editor::NavigationKey;
 #[cfg(feature = "local_fs")]
 use warp_files::FileModel;
 use warpui::platform::WindowStyle;
-use warpui::{AddSingletonModel, App, ViewHandle};
+use warpui::{AddSingletonModel, App, EntityId, ViewHandle, WindowId};
 use watcher::HomeDirectoryWatcher;
 
 use super::*;
@@ -224,7 +224,6 @@ pub(crate) fn initialize_app(app: &mut App) {
 
     #[cfg(feature = "local_tty")]
     terminal::available_shells::register(app);
-    crate::workspace::inline_rename_state::register(app);
     AltScreenReporting::register(app);
 
     #[cfg(enable_crash_recovery)]
@@ -269,6 +268,45 @@ pub(crate) fn mock_workspace(app: &mut App) -> ViewHandle<Workspace> {
         )
     });
     workspace
+}
+
+pub(crate) fn start_tab_group_rename(
+    workspace: &ViewHandle<Workspace>,
+    app: &mut App,
+) -> (WindowId, ViewHandle<TerminalView>, EntityId) {
+    workspace.update(app, |workspace, ctx| {
+        workspace.handle_action(
+            &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+            ctx,
+        );
+        let group_id = workspace.tabs[0]
+            .group_id
+            .expect("active tab should be assigned to the new group");
+        workspace.rename_tab_group(group_id, ctx);
+        let terminal = workspace
+            .active_tab_pane_group()
+            .as_ref(ctx)
+            .active_session_view(ctx)
+            .expect("new tab group should contain a terminal");
+        (
+            ctx.window_id(),
+            terminal,
+            workspace.tab_group_rename_editor.id(),
+        )
+    })
+}
+pub(crate) fn active_terminal(
+    workspace: &ViewHandle<Workspace>,
+    app: &mut App,
+) -> (WindowId, ViewHandle<TerminalView>) {
+    workspace.update(app, |workspace, ctx| {
+        let terminal = workspace
+            .active_tab_pane_group()
+            .as_ref(ctx)
+            .active_session_view(ctx)
+            .expect("active tab should contain a terminal");
+        (ctx.window_id(), terminal)
+    })
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -5517,46 +5555,6 @@ fn test_tab_group_rename_blur_does_not_commit_unfinished_name() {
             assert_eq!(
                 workspace.tab_groups[&group_id].name, None,
                 "a rename interrupted by the terminal stealing focus must not be committed"
-            );
-        });
-    });
-}
-
-/// Guards the other half of the #14241 fix: suppressing terminal focus while an inline
-/// rename is open is only safe if every exit from the rename clears that state again.
-/// If cancelling left it set, terminals would silently stop taking focus for the rest of
-/// the session — a worse bug than the one being fixed, and a much harder one to trace.
-#[test]
-fn test_tab_group_rename_exits_release_terminal_focus_suppression() {
-    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
-
-    App::test((), |mut app| async move {
-        initialize_app(&mut app);
-
-        let workspace = mock_workspace(&mut app);
-        workspace.update(&mut app, |workspace, ctx| {
-            workspace.handle_action(
-                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
-                ctx,
-            );
-            let group_id = workspace.tabs[0].group_id.expect("tab should be grouped");
-
-            // Committing with Enter releases it.
-            workspace.rename_tab_group(group_id, ctx);
-            assert!(InlineRenameState::editor_has_focus(ctx));
-            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Enter, ctx);
-            assert!(
-                !InlineRenameState::editor_has_focus(ctx),
-                "finishing a rename must let terminals take focus again"
-            );
-
-            // So does cancelling with Escape.
-            workspace.rename_tab_group(group_id, ctx);
-            assert!(InlineRenameState::editor_has_focus(ctx));
-            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Escape, ctx);
-            assert!(
-                !InlineRenameState::editor_has_focus(ctx),
-                "cancelling a rename must let terminals take focus again"
             );
         });
     });

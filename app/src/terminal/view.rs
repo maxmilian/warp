@@ -30,7 +30,6 @@ use warp_util::standardized_path::StandardizedPath;
 
 use crate::ai::block_context::BlockContext;
 use crate::global_resource_handles::GlobalResourceHandlesProvider;
-use crate::workspace::inline_rename_state::InlineRenameState;
 pub(crate) mod docker_sandbox;
 mod link_detection;
 mod open_in_warp;
@@ -547,6 +546,7 @@ use crate::workspace::view::cloud_agent_capacity_modal::CloudAgentCapacityModalV
 use crate::workspace::{
     CommandSearchOptions, ForkAIConversationParams, ForkFromExchange,
     ForkedConversationDestination, OneTimeModalModel, ToastStack, WorkspaceAction,
+    WorkspaceRegistry,
 };
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 use crate::workspaces::workspace::CustomerType;
@@ -12114,10 +12114,17 @@ impl TerminalView {
                 // users get stuck as they'd otherwise need to click into the
                 // box to respond to whether or not they want to update oh my zsh.
                 //
-                // Skipped while an inline rename editor is waiting for keystrokes: taking
+                // Skipped while the tab group rename editor is waiting for keystrokes: taking
                 // focus would blur it, and a blur ends the rename, so the user would lose
                 // the name they were halfway through typing (#14241).
-                if !InlineRenameState::editor_has_focus(ctx) {
+                let tab_group_rename_editor_is_focused = WorkspaceRegistry::as_ref(ctx)
+                    .get(self.window_id, ctx)
+                    .is_some_and(|workspace| {
+                        workspace
+                            .as_ref(ctx)
+                            .is_tab_group_rename_editor_focused(ctx)
+                    });
+                if !tab_group_rename_editor_is_focused {
                     self.focus_terminal(ctx);
                 }
             }

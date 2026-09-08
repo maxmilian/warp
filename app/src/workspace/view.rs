@@ -499,7 +499,6 @@ use crate::workspace::cross_window_tab_drag::{
 };
 use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderToolbarEditorModal};
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
-use crate::workspace::inline_rename_state::InlineRenameState;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
@@ -1600,7 +1599,6 @@ impl Workspace {
             group.name = Some(trimmed.to_string());
         }
         self.clear_tab_group_name_editor(ctx);
-        InlineRenameState::set_editor_has_focus(false, ctx);
         self.focus_active_tab(ctx);
         ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();
@@ -1613,7 +1611,6 @@ impl Workspace {
         {
             self.current_workspace_state.clear_tab_group_being_renamed();
             self.clear_tab_group_name_editor(ctx);
-            InlineRenameState::set_editor_has_focus(false, ctx);
             self.focus_active_tab(ctx);
             ctx.notify();
         }
@@ -7369,6 +7366,12 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn is_tab_group_rename_editor_focused(&self, ctx: &AppContext) -> bool {
+        self.current_workspace_state
+            .is_any_tab_group_being_renamed()
+            && ctx.focused_view_id(self.window_id) == Some(self.tab_group_rename_editor.id())
+    }
+
     /// Opens the inline rename editor over the given group's header.
     pub fn rename_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
         let Some(group) = self.tab_groups.get(&group_id) else {
@@ -7390,9 +7393,6 @@ impl Workspace {
                 editor.insert_selected_text(&seed_text, ctx);
             });
         ctx.focus(&self.tab_group_rename_editor);
-        // Tell the terminal side that an inline editor owns focus, so a terminal that
-        // finishes bootstrapping a moment from now does not steal it (#14241).
-        InlineRenameState::set_editor_has_focus(true, ctx);
         ctx.notify();
     }
 
