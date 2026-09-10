@@ -12167,17 +12167,14 @@ impl TerminalView {
                 // users get stuck as they'd otherwise need to click into the
                 // box to respond to whether or not they want to update oh my zsh.
                 //
-                // Skipped while the tab group rename editor is waiting for keystrokes: taking
-                // focus would blur it, and a blur ends the rename, so the user would lose
-                // the name they were halfway through typing (#14241).
-                let tab_group_rename_editor_is_focused = WorkspaceRegistry::as_ref(ctx)
+                // Skipped while a tab or tab-group rename editor is focused. Taking focus
+                // would end the rename and lose user inputs (#14241).
+                let inline_rename_editor_is_focused = WorkspaceRegistry::as_ref(ctx)
                     .get(self.window_id, ctx)
                     .is_some_and(|workspace| {
-                        workspace
-                            .as_ref(ctx)
-                            .is_tab_group_rename_editor_focused(ctx)
+                        workspace.as_ref(ctx).is_inline_rename_editor_focused(ctx)
                     });
-                if !tab_group_rename_editor_is_focused {
+                if !inline_rename_editor_is_focused {
                     self.focus_terminal(ctx);
                 }
             }

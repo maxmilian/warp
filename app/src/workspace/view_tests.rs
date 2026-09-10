@@ -18,7 +18,7 @@ use warp_editor::editor::NavigationKey;
 #[cfg(feature = "local_fs")]
 use warp_files::FileModel;
 use warpui::platform::WindowStyle;
-use warpui::{AddSingletonModel, App, EntityId, ViewHandle, WindowId};
+use warpui::{AddSingletonModel, App, ViewHandle};
 use watcher::HomeDirectoryWatcher;
 
 use super::*;
@@ -268,45 +268,6 @@ pub(crate) fn mock_workspace(app: &mut App) -> ViewHandle<Workspace> {
         )
     });
     workspace
-}
-
-pub(crate) fn start_tab_group_rename(
-    workspace: &ViewHandle<Workspace>,
-    app: &mut App,
-) -> (WindowId, ViewHandle<TerminalView>, EntityId) {
-    workspace.update(app, |workspace, ctx| {
-        workspace.handle_action(
-            &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
-            ctx,
-        );
-        let group_id = workspace.tabs[0]
-            .group_id
-            .expect("active tab should be assigned to the new group");
-        workspace.rename_tab_group(group_id, ctx);
-        let terminal = workspace
-            .active_tab_pane_group()
-            .as_ref(ctx)
-            .active_session_view(ctx)
-            .expect("new tab group should contain a terminal");
-        (
-            ctx.window_id(),
-            terminal,
-            workspace.tab_group_rename_editor.id(),
-        )
-    })
-}
-pub(crate) fn active_terminal(
-    workspace: &ViewHandle<Workspace>,
-    app: &mut App,
-) -> (WindowId, ViewHandle<TerminalView>) {
-    workspace.update(app, |workspace, ctx| {
-        let terminal = workspace
-            .active_tab_pane_group()
-            .as_ref(ctx)
-            .active_session_view(ctx)
-            .expect("active tab should contain a terminal");
-        (ctx.window_id(), terminal)
-    })
 }
 
 #[cfg(not(target_family = "wasm"))]

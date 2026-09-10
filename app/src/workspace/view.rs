@@ -7367,10 +7367,16 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn is_tab_group_rename_editor_focused(&self, ctx: &AppContext) -> bool {
-        self.current_workspace_state
-            .is_any_tab_group_being_renamed()
-            && ctx.focused_view_id(self.window_id) == Some(self.tab_group_rename_editor.id())
+    pub(crate) fn is_inline_rename_editor_focused(&self, ctx: &AppContext) -> bool {
+        match ctx.focused_view_id(self.window_id) {
+            Some(id) if id == self.tab_rename_editor.id() => {
+                self.current_workspace_state.is_tab_being_renamed()
+            }
+            Some(id) if id == self.tab_group_rename_editor.id() => self
+                .current_workspace_state
+                .is_any_tab_group_being_renamed(),
+            _ => false,
+        }
     }
 
     /// Opens the inline rename editor over the given group's header.

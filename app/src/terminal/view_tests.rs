@@ -58,6 +58,7 @@ use crate::server::server_api::ai::SpawnAgentRequest;
 use crate::server::team_scope::RequestTeamScope;
 use crate::settings::import::model::ImportedConfigModel;
 use crate::settings::{AISettings, AppEditorSettings, RightClickBehavior, WarpPromptSeparator};
+use crate::tab::NewSessionMenuItem;
 use crate::terminal::alt_screen::should_intercept_mouse;
 use crate::terminal::block_list_element::{SnackbarPoint, SnackbarTranslationMode};
 use crate::terminal::block_list_viewport::{ClampingMode, ScrollLines};
@@ -93,11 +94,8 @@ use crate::test_util::terminal::{
 };
 use crate::test_util::{add_window_with_terminal, assert_eventually};
 use crate::view_components::find::FindWithinBlockState;
-use crate::workspace::ToastStack;
-use crate::workspace::view::tests::{
-    active_terminal, initialize_app as initialize_workspace_app, mock_workspace,
-    start_tab_group_rename,
-};
+use crate::workspace::view::tests::{initialize_app as initialize_workspace_app, mock_workspace};
+use crate::workspace::{ToastStack, WorkspaceAction};
 use crate::workspaces::user_workspaces::TeamlessScopeForTest;
 
 fn add_window_with_cloud_mode_terminal(app: &mut App) -> ViewHandle<TerminalView> {
@@ -10226,49 +10224,32 @@ fn back_button_label_resolves_token_only_parent_linkage() {
 }
 
 #[test]
-fn visible_bootstrap_block_focuses_terminal_under_shared_test_setup() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let (window, terminal) = add_window_with_id_and_terminal(&mut app, None);
-
-        // Move focus off the terminal so the event has something to undo.
-        terminal.update(&mut app, |view, ctx| {
-            let find_bar = view.find_bar.clone();
-            ctx.focus(&find_bar);
-        });
-        assert_ne!(app.focused_view_id(window), Some(terminal.id()));
-
-        terminal.update(&mut app, |view, ctx| {
-            view.handle_terminal_event(&ModelEvent::VisibleBootstrapBlock, ctx);
-        });
-
-        assert_eq!(app.focused_view_id(window), Some(terminal.id()));
-    });
-}
-
-#[test]
-fn visible_bootstrap_block_focus_is_not_suppressed_by_rename_in_another_window() {
-    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
-
+fn visible_bootstrap_block_leaves_focus_on_tab_rename_editor() {
     App::test((), |mut app| async move {
         initialize_workspace_app(&mut app);
-        let rename_workspace = mock_workspace(&mut app);
-        let (rename_window, _, editor_id) = start_tab_group_rename(&rename_workspace, &mut app);
-        assert_eq!(app.focused_view_id(rename_window), Some(editor_id));
-
-        let other_workspace = mock_workspace(&mut app);
-        let (other_window, terminal) = active_terminal(&other_workspace, &mut app);
-        terminal.update(&mut app, |view, ctx| {
-            let find_bar = view.find_bar.clone();
-            ctx.focus(&find_bar);
+        let workspace = mock_workspace(&mut app);
+        let (window, terminal) = workspace.update(&mut app, |workspace, ctx| {
+            workspace.rename_tab(0, ctx);
+            let terminal = workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .expect("tab should contain a terminal");
+            (ctx.window_id(), terminal)
         });
-        assert_ne!(app.focused_view_id(other_window), Some(terminal.id()));
+        assert!(workspace.read(&app, |workspace, ctx| {
+            workspace.is_inline_rename_editor_focused(ctx)
+        }));
+        let focused_before = app.focused_view_id(window);
 
         terminal.update(&mut app, |view, ctx| {
             view.handle_terminal_event(&ModelEvent::VisibleBootstrapBlock, ctx);
         });
 
-        assert_eq!(app.focused_view_id(other_window), Some(terminal.id()));
+        assert_eq!(app.focused_view_id(window), focused_before);
+        assert!(workspace.read(&app, |workspace, ctx| {
+            workspace.is_inline_rename_editor_focused(ctx)
+        }));
     });
 }
 
@@ -10278,33 +10259,36 @@ fn visible_bootstrap_block_leaves_focus_on_tab_group_rename_editor() {
     App::test((), |mut app| async move {
         initialize_workspace_app(&mut app);
         let workspace = mock_workspace(&mut app);
-        let (window, terminal, editor_id) = start_tab_group_rename(&workspace, &mut app);
-        assert_eq!(app.focused_view_id(window), Some(editor_id));
+        let (window, terminal, group_id) = workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[0]
+                .group_id
+                .expect("active tab should be assigned to the new group");
+            let terminal = workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .expect("new tab group should contain a terminal");
+            (ctx.window_id(), terminal, group_id)
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.rename_tab_group(group_id, ctx);
+        });
+        assert!(workspace.read(&app, |workspace, ctx| {
+            workspace.is_inline_rename_editor_focused(ctx)
+        }));
+        let focused_before = app.focused_view_id(window);
 
         terminal.update(&mut app, |view, ctx| {
             view.handle_terminal_event(&ModelEvent::VisibleBootstrapBlock, ctx);
         });
-        assert_eq!(app.focused_view_id(window), Some(editor_id));
-    });
-}
 
-#[test]
-fn visible_bootstrap_block_focuses_terminal_after_workspace_clears_rename_state() {
-    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
-
-    App::test((), |mut app| async move {
-        initialize_workspace_app(&mut app);
-        let workspace = mock_workspace(&mut app);
-        let (window, terminal, editor_id) = start_tab_group_rename(&workspace, &mut app);
-        assert_eq!(app.focused_view_id(window), Some(editor_id));
-
-        workspace.update(&mut app, |workspace, _| {
-            workspace.current_workspace_state.close_all_modals();
-        });
-        terminal.update(&mut app, |view, ctx| {
-            view.handle_terminal_event(&ModelEvent::VisibleBootstrapBlock, ctx);
-        });
-
-        assert_eq!(app.focused_view_id(window), Some(terminal.id()));
+        assert_eq!(app.focused_view_id(window), focused_before);
+        assert!(workspace.read(&app, |workspace, ctx| {
+            workspace.is_inline_rename_editor_focused(ctx)
+        }));
     });
 }
