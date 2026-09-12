@@ -3938,12 +3938,39 @@ impl Workspace {
                     .and_then(|group_index| group_ids.get(group_index).copied().flatten());
             });
 
-        // Focus the active tab from the launch config.
-        if let Some(&index) = window
+        // A pinned group makes its members effectively pinned, and the pinned
+        // region is a prefix of the tab list. The inserts above ran while the
+        // tabs were still ungrouped, so `NewTabPlacement` could leave the block
+        // after the active window's unpinned tabs -- assigning membership is
+        // what pins them, so the repositioning has to happen here, not earlier.
+        // This mirrors `pin_tab_group`: move the group's block to the current
+        // pinned boundary. `restored_indices` goes stale across those moves, so
+        // resolve the tab to focus by its pane group id instead.
+        let active_pane_group_id = window
             .active_tab_index
             .and_then(|active| restored_indices.get(active))
             .or_else(|| restored_indices.first())
-        {
+            .and_then(|&index| self.tabs.get(index))
+            .map(|tab| tab.pane_group.id());
+
+        for group_id in group_ids.iter().flatten() {
+            if self
+                .tab_groups
+                .get(group_id)
+                .is_some_and(|group| group.pinned)
+            {
+                let target = self.pinned_boundary_index(&self.tabs);
+                self.move_group_block(*group_id, target, ctx);
+            }
+        }
+
+        // Focus the active tab from the launch config.
+        let active_index = active_pane_group_id.and_then(|pane_group_id| {
+            self.tabs
+                .iter()
+                .position(|tab| tab.pane_group.id() == pane_group_id)
+        });
+        if let Some(index) = active_index {
             self.activate_tab_internal(index, ctx);
         }
     }

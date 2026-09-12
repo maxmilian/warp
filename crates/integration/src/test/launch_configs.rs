@@ -749,3 +749,134 @@ pub fn test_launch_config_restores_tab_groups_into_active_window() -> Builder {
                 )),
         )
 }
+
+/// A launch config whose group is pinned must restore that group into the
+/// pinned prefix of the tab bar.
+///
+/// Restored tabs are inserted while still ungrouped, so `NewTabPlacement` puts
+/// them wherever the active tab points; the `group_id` assignment that follows
+/// is what makes them effectively pinned. Opening such a config into a window
+/// that already holds unpinned tabs therefore used to leave the pinned group
+/// stranded in the middle of the list, which no other code path can produce.
+pub fn test_launch_config_restores_pinned_tab_group_into_pinned_prefix() -> Builder {
+    use warp::integration_testing::workspace::assert_tab_groups;
+    use warp::launch_configs::launch_config::{
+        LaunchConfig, PaneMode, PaneTemplateType, TabGroupTemplate, TabTemplate, WindowTemplate,
+    };
+    use warp::themes::theme::AnsiColorIdentifier;
+
+    FeatureFlag::GroupedTabs.set_enabled(true);
+    FeatureFlag::PinnedTabs.set_enabled(true);
+
+    fn tab(title: &str, group: Option<usize>) -> TabTemplate {
+        TabTemplate {
+            group,
+            title: Some(title.to_owned()),
+            layout: PaneTemplateType::PaneTemplate {
+                is_focused: Some(true),
+                cwd: PathBuf::from("/some/path"),
+                commands: Vec::new(),
+                pane_mode: PaneMode::Terminal,
+                shell: None,
+            },
+            commands: Vec::new(),
+            color: None,
+        }
+    }
+
+    /// Two ungrouped tabs, opened into a new window, first one left active.
+    fn ungrouped_config() -> LaunchConfig {
+        LaunchConfig {
+            name: "Plain config".to_owned(),
+            active_window_index: Some(0),
+            windows: vec![WindowTemplate {
+                tab_groups: vec![],
+                active_tab_index: Some(0),
+                tabs: vec![tab("first", None), tab("last", None)],
+            }],
+        }
+    }
+
+    /// "Backend" is pinned, "Frontend" is not.
+    fn pinned_group_config() -> LaunchConfig {
+        LaunchConfig {
+            name: "Pinned config".to_owned(),
+            active_window_index: Some(0),
+            windows: vec![WindowTemplate {
+                tab_groups: vec![
+                    TabGroupTemplate {
+                        name: Some("Backend".to_owned()),
+                        color: Some(AnsiColorIdentifier::Blue),
+                        collapsed: false,
+                        pinned: true,
+                    },
+                    TabGroupTemplate {
+                        name: Some("Frontend".to_owned()),
+                        color: None,
+                        collapsed: false,
+                        pinned: false,
+                    },
+                ],
+                active_tab_index: Some(0),
+                tabs: vec![
+                    tab("api", Some(0)),
+                    tab("worker", Some(0)),
+                    tab("web", Some(1)),
+                ],
+            }],
+        }
+    }
+
+    new_builder()
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(
+            new_step_with_default_assertions("Open two ungrouped tabs in a new window")
+                .with_action(move |app, _, _| {
+                    app.dispatch_global_action(
+                        "root_view:open_launch_config",
+                        warp::root_view::OpenLaunchConfigArg {
+                            launch_config: ungrouped_config(),
+                            ui_location: get_launch_config_ui_location(),
+                            open_in_active_window: false,
+                        },
+                    );
+                }),
+        )
+        .with_step(
+            new_step_with_default_assertions("Assert the first of the two tabs is active")
+                .add_assertion(assert_tab_count(2))
+                .add_assertion(assert_focused_tab_index(0)),
+        )
+        .with_step(
+            new_step_with_default_assertions("Open a pinned-group launch config into that window")
+                .with_action(move |app, _, _| {
+                    app.dispatch_global_action(
+                        "root_view:open_launch_config",
+                        warp::root_view::OpenLaunchConfigArg {
+                            launch_config: pinned_group_config(),
+                            ui_location: get_launch_config_ui_location(),
+                            open_in_active_window: true,
+                        },
+                    );
+                })
+                .set_post_step_pause(Duration::from_secs(1)),
+        )
+        .with_step(
+            new_step_with_default_assertions("Assert the pinned group leads the tab list")
+                .add_assertion(assert_tab_count(5))
+                .add_assertion(assert_tab_groups(
+                    // Pinned "Backend" moved ahead of the pre-existing
+                    // "first"; unpinned "Frontend" stayed where it was
+                    // inserted. Without the move this reads
+                    // [None, Some(0), Some(0), Some(1), None].
+                    vec![Some(0), Some(0), None, Some(1), None],
+                    vec![
+                        (Some("Backend"), Some(AnsiColorIdentifier::Blue)),
+                        (Some("Frontend"), None),
+                    ],
+                ))
+                // The config's active tab is "api", which the move carried to
+                // the front of the list.
+                .add_assertion(assert_focused_tab_index(0)),
+        )
+}
